@@ -1,0 +1,3 @@
+--! Checksum file required by sqlx offline mode.
+--! SHA-256 of migrations/0001_init.sql computed at dev time.
+--! Regenerate with: cargo sqlx prepare

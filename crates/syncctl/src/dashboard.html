@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>syncd — Cloud Sync & Offload Dashboard</title>
+  <style>
+    :root {
+      --bg-dark: #0f172a;
+      --bg-card: #1e293b;
+      --bg-card-hover: #24344d;
+      --border-color: #334155;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent-blue: #38bdf8;
+      --accent-green: #4ade80;
+      --accent-yellow: #facc15;
+      --accent-red: #f87171;
+      --accent-purple: #c084fc;
+      --accent-cyan: #22d3ee;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-dark);
+      color: var(--text-main);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Header */
+    header {
+      background-color: var(--bg-card);
+      border-bottom: 1px solid var(--border-color);
+      padding: 1rem 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .brand-logo {
+      width: 32px;
+      height: 32px;
+      background: linear-gradient(135deg, #0284c7, #38bdf8);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      color: #fff;
+      font-size: 1.1rem;
+    }
+
+    .brand-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .brand-sub {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .header-actions {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+    }
+
+    /* Buttons */
+    .btn {
+      padding: 0.45rem 0.9rem;
+      border-radius: 6px;
+      border: 1px solid var(--border-color);
+      background-color: #334155;
+      color: var(--text-main);
+      font-size: 0.85rem;
+      font-weight: 500;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      transition: all 0.15s ease-in-out;
+    }
+
+    .btn:hover {
+      background-color: #475569;
+      border-color: #64748b;
+    }
+
+    .btn-primary {
+      background-color: #0284c7;
+      border-color: #0369a1;
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background-color: #0369a1;
+    }
+
+    .btn-danger {
+      background-color: #b91c1c;
+      border-color: #991b1b;
+      color: white;
+    }
+
+    .btn-danger:hover {
+      background-color: #991b1b;
+    }
+
+    .btn-sm {
+      padding: 0.25rem 0.6rem;
+      font-size: 0.75rem;
+    }
+
+    /* Main Container */
+    main {
+      flex: 1;
+      max-width: 1400px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 2rem;
+    }
+
+    /* Metric Cards */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1.25rem;
+    }
+
+    .metric-card {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 1.25rem;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .metric-title {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+    }
+
+    .metric-value {
+      font-size: 1.75rem;
+      font-weight: 700;
+      font-family: var(--font-mono);
+      color: var(--text-main);
+    }
+
+    .metric-sub {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-top: 0.25rem;
+    }
+
+    /* Section Cards */
+    .section-card {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .section-header {
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .section-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .badge-count {
+      background-color: #334155;
+      padding: 0.15rem 0.55rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+
+    /* Table */
+    .table-container {
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.9rem;
+    }
+
+    th {
+      background-color: rgba(15, 23, 42, 0.4);
+      color: var(--text-muted);
+      font-weight: 600;
+      padding: 0.85rem 1.5rem;
+      border-bottom: 1px solid var(--border-color);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    td {
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid var(--border-color);
+      vertical-align: middle;
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    tr:hover td {
+      background-color: var(--bg-card-hover);
+    }
+
+    /* State Pills */
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.25rem 0.65rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: capitalize;
+    }
+
+    .status-idle { background: rgba(74, 222, 128, 0.15); color: #4ade80; border: 1px solid rgba(74, 222, 128, 0.3); }
+    .status-syncing { background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); }
+    .status-scanning { background: rgba(192, 132, 252, 0.15); color: #c084fc; border: 1px solid rgba(192, 132, 252, 0.3); }
+    .status-paused { background: rgba(250, 204, 21, 0.15); color: #facc15; border: 1px solid rgba(250, 204, 21, 0.3); }
+    .status-offloading { background: rgba(34, 211, 238, 0.15); color: #22d3ee; border: 1px solid rgba(34, 211, 238, 0.3); }
+    .status-error { background: rgba(248, 113, 113, 0.15); color: #f87171; border: 1px solid rgba(248, 113, 113, 0.3); }
+
+    .pulse-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background-color: currentColor;
+      box-shadow: 0 0 6px currentColor;
+    }
+
+    /* Progress bar */
+    .progress-bar-container {
+      width: 100%;
+      height: 8px;
+      background-color: #334155;
+      border-radius: 4px;
+      overflow: hidden;
+      margin-top: 0.35rem;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #0284c7, #38bdf8);
+      border-radius: 4px;
+      transition: width 0.3s ease;
+    }
+
+    .mono {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+    }
+
+    /* Empty state */
+    .empty-state {
+      padding: 3rem 1rem;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.95rem;
+    }
+
+    /* Modal Backdrop */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background-color: rgba(15, 23, 42, 0.75);
+      backdrop-filter: blur(4px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+
+    .modal-card {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      width: 100%;
+      max-width: 440px;
+      padding: 1.5rem;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+    }
+
+    .modal-header {
+      font-size: 1.15rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+    }
+
+    .modal-input {
+      width: 100%;
+      padding: 0.65rem 0.85rem;
+      background-color: #0f172a;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      color: var(--text-main);
+      font-family: var(--font-mono);
+      font-size: 0.95rem;
+      margin-bottom: 1rem;
+    }
+
+    .modal-input:focus {
+      outline: none;
+      border-color: var(--accent-blue);
+    }
+
+    .modal-presets {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      margin-bottom: 1.25rem;
+    }
+
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.75rem;
+    }
+
+    /* Toast notification */
+    #toast {
+      position: fixed;
+      bottom: 2rem;
+      right: 2rem;
+      padding: 0.75rem 1.25rem;
+      background-color: #1e293b;
+      border: 1px solid var(--border-color);
+      border-left: 4px solid var(--accent-blue);
+      border-radius: 8px;
+      color: var(--text-main);
+      font-size: 0.9rem;
+      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
+      display: none;
+      z-index: 1100;
+      animation: fadeIn 0.2s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <header>
+    <div class="brand">
+      <div class="brand-logo">⇅</div>
+      <div>
+        <div class="brand-title">syncd</div>
+        <div class="brand-sub">Cloud Sync &amp; Offload Platform</div>
+      </div>
+    </div>
+
+    <div class="header-actions">
+      <button class="btn" onclick="openBwModal()">⚙ Bandwidth Limit</button>
+      <button class="btn btn-primary" onclick="triggerScan(null)">⚡ Re-Scan All</button>
+      <button class="btn" onclick="resumeSync(null)">▶ Resume All</button>
+      <button class="btn btn-danger" onclick="openPauseModal(null, 'Global')">⏸ Pause All</button>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main>
+    <!-- Top Metrics Overview -->
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-title">Upload Speed</div>
+        <div class="metric-value" id="val-speed">0 B/s</div>
+        <div class="metric-sub" id="val-speed-sub">Real-time aggregate</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-title">Bandwidth Limit</div>
+        <div class="metric-value" id="val-limit">Unlimited</div>
+        <div class="metric-sub">Token bucket cap</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-title">In-Flight Tasks</div>
+        <div class="metric-value" id="val-inflight">0</div>
+        <div class="metric-sub" id="val-pending">0 files queued</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-title">Daemon Health</div>
+        <div class="metric-value" id="val-daemon" style="color: var(--accent-green);">ONLINE</div>
+        <div class="metric-sub">UDS IPC Active</div>
+      </div>
+    </div>
+
+    <!-- Active Transfers Section -->
+    <div class="section-card">
+      <div class="section-header">
+        <div class="section-title">
+          <span>In-Flight Transfers</span>
+          <span class="badge-count" id="transfers-count">0</span>
+        </div>
+      </div>
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Operation</th>
+              <th>Relative Path</th>
+              <th>Progress</th>
+              <th>Speed</th>
+              <th>ETA</th>
+            </tr>
+          </thead>
+          <tbody id="transfers-body">
+            <tr>
+              <td colspan="5" class="empty-state">No transfers currently in flight.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Watched Sync Folders Section -->
+    <div class="section-card">
+      <div class="section-header">
+        <div class="section-title">
+          <span>Watched Sync Folders</span>
+          <span class="badge-count" id="folders-count">0</span>
+        </div>
+      </div>
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Folder Name</th>
+              <th>State</th>
+              <th>Mode</th>
+              <th>Local Path</th>
+              <th>Remote Target</th>
+              <th>Tracked / Pending</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="folders-body">
+            <tr>
+              <td colspan="7" class="empty-state">Loading watched folders...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+
+  <!-- Modals -->
+  <!-- Bandwidth Limit Modal -->
+  <div class="modal-backdrop" id="bw-modal">
+    <div class="modal-card">
+      <div class="modal-header">Set Global Bandwidth Limit</div>
+      <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.75rem;">
+        Specify max upload throughput (e.g. <code>5MB/s</code>, <code>500KB</code>, or <code>0</code> for unlimited).
+      </p>
+      <input type="text" class="modal-input" id="bw-input" placeholder="e.g. 5MB/s or 0">
+      <div class="modal-presets">
+        <button class="btn btn-sm" onclick="setBwPreset('0')">Unlimited</button>
+        <button class="btn btn-sm" onclick="setBwPreset('1MB/s')">1 MB/s</button>
+        <button class="btn btn-sm" onclick="setBwPreset('5MB/s')">5 MB/s</button>
+        <button class="btn btn-sm" onclick="setBwPreset('20MB/s')">20 MB/s</button>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" onclick="closeBwModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="submitBwLimit()">Apply Limit</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pause Duration Modal -->
+  <div class="modal-backdrop" id="pause-modal">
+    <div class="modal-card">
+      <div class="modal-header" id="pause-modal-title">Pause Synchronization</div>
+      <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.75rem;">
+        Pause transfers temporarily or indefinitely. Specify seconds or duration (e.g. <code>30m</code>, <code>1h</code>).
+      </p>
+      <input type="text" class="modal-input" id="pause-input" placeholder="Leave empty for indefinite">
+      <div class="modal-presets">
+        <button class="btn btn-sm" onclick="setPausePreset('')">Indefinite</button>
+        <button class="btn btn-sm" onclick="setPausePreset('300')">5 Minutes</button>
+        <button class="btn btn-sm" onclick="setPausePreset('900')">15 Minutes</button>
+        <button class="btn btn-sm" onclick="setPausePreset('3600')">1 Hour</button>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" onclick="closePauseModal()">Cancel</button>
+        <button class="btn btn-danger" onclick="submitPause()">Pause</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast">Action triggered</div>
+
+  <script>
+    let activePauseTarget = null;
+
+    function formatBytes(bytes) {
+      if (bytes === 0) return '0 B';
+      const k = 1024;
+      const sizes = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return (bytes / Math.pow(k, i)).toFixed(1) + ' ' + sizes[i];
+    }
+
+    function showToast(msg, isError = false) {
+      const toast = document.getElementById('toast');
+      toast.textContent = msg;
+      toast.style.borderLeftColor = isError ? 'var(--accent-red)' : 'var(--accent-blue)';
+      toast.style.display = 'block';
+      setTimeout(() => {
+        toast.style.display = 'none';
+      }, 3000);
+    }
+
+    async function pollStatus() {
+      try {
+        const res = await fetch('/api/status');
+        if (!res.ok) throw new Error('Daemon status unavailable');
+        const data = await res.json();
+        renderDashboard(data);
+      } catch (e) {
+        document.getElementById('val-daemon').textContent = 'OFFLINE';
+        document.getElementById('val-daemon').style.color = 'var(--accent-red)';
+      }
+    }
+
+    function renderDashboard(data) {
+      // Daemon Status
+      document.getElementById('val-daemon').textContent = 'ONLINE';
+      document.getElementById('val-daemon').style.color = 'var(--accent-green)';
+
+      // Metrics
+      document.getElementById('val-speed').textContent = `${formatBytes(data.global_upload_bps)}/s`;
+      document.getElementById('val-limit').textContent = data.global_limit_bps > 0 
+        ? `${formatBytes(data.global_limit_bps)}/s` 
+        : 'Unlimited';
+
+      const inFlightCount = data.active_transfers ? data.active_transfers.length : 0;
+      document.getElementById('val-inflight').textContent = inFlightCount;
+      document.getElementById('transfers-count').textContent = inFlightCount;
+
+      let totalPending = 0;
+      if (data.folders) {
+        totalPending = data.folders.reduce((acc, f) => acc + (f.pending_tasks || 0), 0);
+      }
+      document.getElementById('val-pending').textContent = `${totalPending} files queued`;
+
+      // Render Transfers
+      const tb = document.getElementById('transfers-body');
+      if (!data.active_transfers || data.active_transfers.length === 0) {
+        tb.innerHTML = '<tr><td colspan="5" class="empty-state">No transfers currently in flight.</td></tr>';
+      } else {
+        tb.innerHTML = data.active_transfers.map(t => {
+          const pct = t.total_bytes > 0 ? Math.min(100, (t.transferred_bytes / t.total_bytes) * 100) : 0;
+          const eta = t.eta_secs ? `${Math.round(t.eta_secs)}s` : '--';
+          return `
+            <tr>
+              <td><span class="status-pill status-syncing">${t.op_type}</span></td>
+              <td class="mono" title="${t.rel_path}">${t.rel_path}</td>
+              <td style="min-width: 180px;">
+                <div style="display:flex; justify-content:space-between; font-size:0.8rem; color:var(--text-muted);">
+                  <span>${formatBytes(t.transferred_bytes)} / ${formatBytes(t.total_bytes)}</span>
+                  <span>${pct.toFixed(0)}%</span>
+                </div>
+                <div class="progress-bar-container">
+                  <div class="progress-bar-fill" style="width: ${pct}%"></div>
+                </div>
+              </td>
+              <td class="mono">${formatBytes(t.upload_bps_ewma || 0)}/s</td>
+              <td class="mono">${eta}</td>
+            </tr>
+          `;
+        }).join('');
+      }
+
+      // Render Folders
+      const fb = document.getElementById('folders-body');
+      const folders = data.folders || [];
+      document.getElementById('folders-count').textContent = folders.length;
+
+      if (folders.length === 0) {
+        fb.innerHTML = '<tr><td colspan="7" class="empty-state">No folders watched. Check syncd configuration.</td></tr>';
+      } else {
+        fb.innerHTML = folders.map(f => {
+          let stateClass = 'status-idle';
+          let stateName = typeof f.state === 'string' ? f.state : Object.keys(f.state)[0];
+          let stateLower = stateName.toLowerCase();
+          if (stateLower === 'syncing') stateClass = 'status-syncing';
+          else if (stateLower === 'reconciling' || stateLower === 'scanning') stateClass = 'status-scanning';
+          else if (stateLower === 'paused') stateClass = 'status-paused';
+          else if (stateLower === 'offloading') stateClass = 'status-offloading';
+          else if (stateLower === 'error') stateClass = 'status-error';
+
+          let modeName = '—';
+          if (f.sync_mode === 'continuous_backup') modeName = 'Backup';
+          else if (f.sync_mode === 'drop_and_purge') modeName = 'Offload';
+
+          return `
+            <tr>
+              <td><strong>${f.name}</strong></td>
+              <td><span class="status-pill ${stateClass}"><span class="pulse-dot"></span>${stateName}</span></td>
+              <td><span class="badge-count">${modeName}</span></td>
+              <td class="mono" style="font-size:0.8rem; color:var(--text-muted);">${f.local_path}</td>
+              <td class="mono" style="font-size:0.8rem; color:var(--accent-blue);">${f.remote_target}</td>
+              <td>${f.baseline_file_count || 0} tracked / ${f.pending_tasks || 0} queued</td>
+              <td>
+                <div style="display:flex; gap:0.4rem;">
+                  <button class="btn btn-sm" onclick="triggerScan('${f.folder_id}')">⚡ Scan</button>
+                  ${stateLower === 'paused' 
+                    ? `<button class="btn btn-sm btn-primary" onclick="resumeSync('${f.folder_id}')">▶ Resume</button>`
+                    : `<button class="btn btn-sm" onclick="openPauseModal('${f.folder_id}', '${f.name}')">⏸ Pause</button>`
+                  }
+                </div>
+              </td>
+            </tr>
+          `;
+        }).join('');
+      }
+    }
+
+    // Modal & Action functions
+    function openBwModal() {
+      document.getElementById('bw-modal').style.display = 'flex';
+    }
+    function closeBwModal() {
+      document.getElementById('bw-modal').style.display = 'none';
+    }
+    function setBwPreset(val) {
+      document.getElementById('bw-input').value = val;
+    }
+    async function submitBwLimit() {
+      const raw = document.getElementById('bw-input').value.trim();
+      let bytes = 0;
+      if (raw && raw !== '0' && raw !== 'unlimited') {
+        const num = parseFloat(raw);
+        if (raw.toLowerCase().includes('m')) bytes = num * 1024 * 1024;
+        else if (raw.toLowerCase().includes('k')) bytes = num * 1024;
+        else if (raw.toLowerCase().includes('g')) bytes = num * 1024 * 1024 * 1024;
+        else bytes = num;
+      }
+      try {
+        const res = await fetch('/api/bwlimit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bytes_per_sec: Math.round(bytes) })
+        });
+        const data = await res.json();
+        showToast(data.message || 'Bandwidth limit updated');
+        closeBwModal();
+        pollStatus();
+      } catch (e) {
+        showToast('Failed to set bandwidth limit', true);
+      }
+    }
+
+    function openPauseModal(folderId, name) {
+      activePauseTarget = folderId;
+      document.getElementById('pause-modal-title').textContent = `Pause Synchronization — ${name}`;
+      document.getElementById('pause-input').value = '';
+      document.getElementById('pause-modal').style.display = 'flex';
+    }
+    function closePauseModal() {
+      document.getElementById('pause-modal').style.display = 'none';
+    }
+    function setPausePreset(val) {
+      document.getElementById('pause-input').value = val;
+    }
+    async function submitPause() {
+      const raw = document.getElementById('pause-input').value.trim();
+      let duration = null;
+      if (raw) {
+        duration = parseInt(raw, 10);
+      }
+      try {
+        const res = await fetch('/api/pause', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ folder_id: activePauseTarget, duration_secs: duration })
+        });
+        const data = await res.json();
+        showToast(data.message || 'Paused successfully');
+        closePauseModal();
+        pollStatus();
+      } catch (e) {
+        showToast('Failed to pause', true);
+      }
+    }
+
+    async function resumeSync(folderId) {
+      try {
+        const res = await fetch('/api/resume', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ folder_id: folderId })
+        });
+        const data = await res.json();
+        showToast(data.message || 'Resumed successfully');
+        pollStatus();
+      } catch (e) {
+        showToast('Failed to resume', true);
+      }
+    }
+
+    async function triggerScan(folderId) {
+      try {
+        const res = await fetch('/api/scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ folder_id: folderId })
+        });
+        const data = await res.json();
+        showToast(data.message || 'Scan initiated');
+        pollStatus();
+      } catch (e) {
+        showToast('Failed to initiate scan', true);
+      }
+    }
+
+    // Auto-poll every 1.5 seconds
+    pollStatus();
+    setInterval(pollStatus, 1500);
+  </script>
+</body>
+</html>
+

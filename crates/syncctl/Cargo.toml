@@ -1,0 +1,30 @@
+[package]
+name        = "syncctl"
+description = "CLI control & live telemetry client for syncd"
+version.workspace     = true
+edition.workspace     = true
+authors.workspace     = true
+license.workspace     = true
+rust-version.workspace = true
+
+[[bin]]
+name = "syncctl"
+path = "src/main.rs"
+
+[dependencies]
+sync-common = { workspace = true }
+tokio       = { workspace = true }
+tokio-util  = { workspace = true }
+futures     = { workspace = true }
+clap        = { workspace = true }
+indicatif   = { workspace = true }
+comfy-table = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+anyhow      = { workspace = true }
+chrono      = { workspace = true }
+uuid        = { workspace = true }
+libc        = { workspace = true }
+crossterm       = { version = "0.29", features = ["event-stream"] }
+unicode-width   = "0.1"
+tracing         = { workspace = true }

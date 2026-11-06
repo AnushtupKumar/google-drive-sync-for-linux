@@ -1,0 +1,65 @@
+# ~/.config/syncd/config.toml
+#
+# Production configuration template for syncd (Linux Cloud Sync & Offload Platform)
+
+# Unix domain socket path (Default: $XDG_RUNTIME_DIR/syncd.sock)
+# socket_path = "/run/user/1000/syncd.sock"
+
+# Directory for SQLite WAL database (Default: ~/.local/share/syncd)
+# state_dir = "/home/user/.local/share/syncd"
+
+# Directory for structured rotating log files (Default: ~/.local/state/syncd/logs)
+# log_dir = "/home/user/.local/state/syncd/logs"
+
+# Maximum size in bytes before log file rotation (Default: 25 MiB)
+log_max_size_bytes = 26214400
+
+# Number of rotated gzip archives to retain
+log_max_archives = 10
+
+# Maximum concurrent cloud transfers across all folders
+max_concurrent_transfers = 4
+
+# Global upload bandwidth limit in bytes per second (0 = unlimited)
+default_bandwidth_limit_bps = 0
+
+# Debounce quiet settling window (ms) before queueing transfer
+debounce_quiet_ms = 3000
+
+# Starvation cap (ms) for files under continuous modification
+debounce_max_wait_ms = 60000
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Watched Folder Configurations
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Folder 1: Continuous 1-way backup with non-destructive cloud trash archiving
+[[folders]]
+id = "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d"
+name = "documents"
+local_path = "/home/anushtup/Documents"
+remote_target = "s3://my-company-backup/workstation/documents"
+mode = "continuous_backup"
+exclude_patterns = [
+    ".git/",
+    "target/",
+    "node_modules/",
+    "*.tmp",
+    "*.swp",
+    "*~"
+]
+empty_folder_protection = true
+
+# Folder 2: Safe "Drop & Purge" offload (5-stage TOCTOU verification + bottom-up rmdir)
+[[folders]]
+id = "f6e5d4c3-b2a1-0f9e-8d7c-6b5a4f3e2d1c"
+name = "renders-dropzone"
+local_path = "/home/anushtup/Renders"
+remote_target = "s3://my-company-archive/renders"
+mode = "drop_and_purge"
+exclude_patterns = [
+    "*.crdownload",
+    "*.part"
+]
+empty_folder_protection = false
+

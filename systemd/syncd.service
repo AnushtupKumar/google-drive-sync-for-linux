@@ -1,0 +1,23 @@
+[Unit]
+Description=Real-Time Cloud Synchronization and Safe File Offloading Daemon
+Documentation=man:syncd(1)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/syncd --config %h/.config/syncd/config.toml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+
+# Clean shutdown: give the daemon 20s to flush in-flight transfers before SIGKILL.
+TimeoutStopSec=20s
+# Send SIGTERM to the main process first; if still alive after TimeoutStopSec, SIGKILL.
+KillMode=mixed
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,82 @@
+[package]
+name        = "syncd"
+description = "Real-time cloud synchronisation and safe file offloading daemon"
+version.workspace     = true
+edition.workspace     = true
+authors.workspace     = true
+license.workspace     = true
+rust-version.workspace = true
+
+[[bin]]
+name = "syncd"
+path = "src/main.rs"
+
+[dependencies]
+# Shared types
+sync-common = { workspace = true }
+
+# Async runtime & utilities
+tokio       = { workspace = true }
+tokio-util  = { workspace = true }
+futures     = { workspace = true }
+async-trait = { workspace = true }
+
+# Filesystem watching
+notify   = { workspace = true }
+ignore   = { workspace = true }
+walkdir  = { workspace = true }
+
+# Linux syscalls
+nix         = { workspace = true }
+proc-mounts = { workspace = true }
+
+# Database
+sqlx = { workspace = true }
+
+# Cloud storage
+object_store = { workspace = true }
+reqwest      = { workspace = true }
+
+# Rate-limiting & retry
+governor = { workspace = true }
+backon   = { workspace = true }
+
+# Hashing & integrity
+sha2 = { workspace = true }
+hex  = { workspace = true }
+uuid = { workspace = true }
+
+# Serialisation & config
+serde      = { workspace = true }
+serde_json = { workspace = true }
+toml       = { workspace = true }
+
+# Observability
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+file-rotate        = { workspace = true }
+
+# Desktop notifications
+notify-rust = { workspace = true }
+
+# Error handling (anyhow for binary entrypoint)
+anyhow    = { workspace = true }
+thiserror = { workspace = true }
+
+# CLI args
+clap = { workspace = true }
+
+# Date/time
+chrono = { workspace = true }
+
+# Misc
+bytes = "1.7"
+libc  = { workspace = true }
+url   = { workspace = true }
+
+[build-dependencies]
+# Nothing needed yet; migrations are embedded at compile time via sqlx::migrate!
+
+[dev-dependencies]
+tempfile = "3.12"
+tokio    = { workspace = true }

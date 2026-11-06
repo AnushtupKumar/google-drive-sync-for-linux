@@ -1,0 +1,92 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sync-common",
+    "crates/syncd",
+    "crates/syncctl",
+]
+
+[workspace.package]
+version      = "0.1.0"
+edition      = "2021"
+authors      = ["syncd contributors"]
+license      = "MIT OR Apache-2.0"
+rust-version = "1.80"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Workspace-level dependency versions (crates inherit these with { workspace = true })
+# ──────────────────────────────────────────────────────────────────────────────
+[workspace.dependencies]
+# Async runtime & utilities
+tokio        = { version = "1.40", features = ["full"] }
+tokio-util   = { version = "0.7",  features = ["io", "codec", "rt"] }
+futures      = "0.3"
+async-trait  = "0.1"
+
+# libc for poll(2) in safety.rs mountinfo watcher
+libc         = "0.2"
+
+# URL parsing for remote_target (s3://, gs://, az://)
+url          = "2"
+
+# Filesystem watching & filtering
+notify       = { version = "6.1",  default-features = false, features = ["macos_kqueue"] }
+ignore       = "0.4"
+walkdir      = "2.5"
+
+# Linux syscalls & mount inspection
+nix          = { version = "0.29", features = ["fs", "mount", "process", "signal"] }
+proc-mounts  = "0.3"
+
+# SQLite WAL database
+sqlx         = { version = "0.9",  features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
+
+# Cloud storage (ObjectStore multi-backend)
+object_store = { version = "0.11", features = ["aws", "gcp", "azure", "http"] }
+reqwest      = { version = "0.12", features = ["stream", "json"] }
+
+# Rate-limiting & retry/backoff
+governor     = "0.6"
+backon       = "1.2"
+
+# Hashing & integrity
+sha2         = "0.10"
+hex          = "0.4"
+uuid         = { version = "1.10", features = ["v4", "serde"] }
+
+# Serialisation & configuration
+serde        = { version = "1.0", features = ["derive"] }
+serde_json   = "1.0"
+toml         = "0.8"
+
+# Observability
+tracing             = "0.1"
+tracing-subscriber  = { version = "0.3", features = ["env-filter", "json"] }
+file-rotate         = "0.7"
+
+# D-Bus desktop notifications
+notify-rust  = "4.11"
+
+# Error handling
+thiserror    = "1.0"
+anyhow       = "1.0"
+
+# Date/time
+chrono       = { version = "0.4", features = ["serde"] }
+
+# CLI (syncctl)
+clap        = { version = "4.5", features = ["derive"] }
+indicatif   = "0.17"
+comfy-table = "7.1"
+
+# Shared crate
+sync-common = { path = "crates/sync-common" }
+
+[profile.release]
+opt-level     = 3
+lto           = "thin"
+codegen-units = 1
+strip         = "symbols"
+
+[profile.dev]
+opt-level = 1          # speed up debug builds of heavy deps
