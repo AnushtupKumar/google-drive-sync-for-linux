@@ -125,9 +125,14 @@ async fn main() -> Result<()> {
 
     // Boot supervisor orchestrator
     info!("Bootstrapping actor supervisor");
-    let supervisor = Supervisor::new(config.clone(), pool.clone(), cancel.clone())
-        .await
-        .with_context(|| "Failed to bootstrap supervisor")?;
+    let supervisor = Supervisor::new(
+        config.clone(),
+        Some(config_path.clone()),
+        pool.clone(),
+        cancel.clone(),
+    )
+    .await
+    .with_context(|| "Failed to bootstrap supervisor")?;
 
     // Spawn Unix Domain Socket IPC listener
     let socket_path = config.resolved_socket_path();
@@ -163,18 +168,14 @@ async fn main() -> Result<()> {
             _ = sighup.recv() => {
                 info!("Received SIGHUP, reloading configuration live");
                 sd_notify("RELOADING=1");
-                match GlobalConfig::from_file(&config_path) {
-                    Ok(new_cfg) => {
-                        if let Err(e) = supervisor.reload_config(new_cfg).await {
-                            error!("Failed to apply reloaded config: {}", e);
-                            logging::notify_warn("syncd: Reload Failed", format!("Config error: {}", e));
-                        } else {
-                            logging::notify_info("syncd: Config Reloaded", "Configuration updated successfully");
-                        }
+                match supervisor.reload_from_disk().await {
+                    Ok(msg) => {
+                        info!("{}", msg);
+                        logging::notify_info("syncd: Config Reloaded", &msg);
                     }
                     Err(e) => {
-                        error!("Failed parsing config on SIGHUP: {}", e);
-                        logging::notify_warn("syncd: Config Syntax Error", format!("{}", e));
+                        error!("Failed reloading config on SIGHUP: {}", e);
+                        logging::notify_warn("syncd: Reload Failed", format!("{}", e));
                     }
                 }
                 sd_notify("READY=1");

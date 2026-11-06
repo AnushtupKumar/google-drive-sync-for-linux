@@ -1,0 +1,13 @@
+# cloud-sync-platform/.cargo/config.toml
+#
+# Enables sqlx offline mode so `cargo check` / `cargo build` work without
+# a live DATABASE_URL.  The query cache in crates/syncd/.sqlx/ is generated
+# by running:
+#
+#   DATABASE_URL="sqlite://$(pwd)/dev.db" cargo sqlx prepare \
+#       --workspace -- --lib --bins
+#
+# and must be committed to version control.
+
+[env]
+SQLX_OFFLINE = "true"

@@ -283,7 +283,7 @@ pub async fn load_folder(pool: &SqlitePool, folder_id: Uuid) -> Result<FolderRec
     .await
     .map_err(DbError::Sqlx)?;
 
-    row.map(|r| row_to_folder_record(r))
+    row.map(row_to_folder_record)
         .ok_or(DbError::FolderNotFound(folder_id))?
 }
 
@@ -660,6 +660,7 @@ pub async fn claim_task(pool: &SqlitePool, task_id: i64) -> Result<bool, DbError
 
 /// Remove a task that completed successfully and record the file in
 /// `synced_files`, all within a single transaction.
+#[allow(clippy::too_many_arguments)]
 pub async fn complete_task(
     pool: &SqlitePool,
     task_id: i64,
@@ -925,7 +926,7 @@ fn ms_to_dt(ms: i64) -> DateTime<Utc> {
     let nsecs = ((ms % 1000) * 1_000_000) as u32;
     Utc.timestamp_opt(secs, nsecs)
         .single()
-        .unwrap_or_else(|| Utc::now())
+        .unwrap_or_else(Utc::now)
 }
 
 /// Parse a UUID from a database string, returning a typed error on failure.

@@ -41,14 +41,17 @@ impl std::fmt::Display for SyncMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalConfig {
     /// Unix socket path for IPC.  Default: `$XDG_RUNTIME_DIR/syncd.sock`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub socket_path: Option<PathBuf>,
 
     /// Directory used for SQLite database and runtime state.
     /// Default: `~/.local/share/syncd`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_dir: Option<PathBuf>,
 
     /// Directory for structured log files.
     /// Default: `~/.local/state/syncd/logs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_dir: Option<PathBuf>,
 
     /// Maximum size in bytes before a log file is rotated.
@@ -81,6 +84,7 @@ pub struct GlobalConfig {
     pub debounce_max_wait_ms: u64,
 
     /// One entry per watched folder / offload target.
+    #[serde(default)]
     pub folders: Vec<FolderConfig>,
 }
 
@@ -121,6 +125,38 @@ impl GlobalConfig {
         self.resolved_log_dir().join("syncd.log")
     }
 
+    /// Returns the default config file path ($XDG_CONFIG_HOME/syncd/config.toml or ~/.config/syncd/config.toml).
+    pub fn default_config_path() -> PathBuf {
+        if let Ok(cfg_dir) = std::env::var("XDG_CONFIG_HOME") {
+            PathBuf::from(cfg_dir).join("syncd/config.toml")
+        } else {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+            PathBuf::from(home).join(".config/syncd/config.toml")
+        }
+    }
+
+    /// Serialize GlobalConfig to a pretty-formatted TOML string.
+    pub fn to_string_pretty(&self) -> Result<String, toml::ser::Error> {
+        toml::to_string_pretty(self)
+    }
+
+    /// Save GlobalConfig to a TOML file atomically (writes to .tmp then renames).
+    pub fn save_to_file(&self, path: &std::path::Path) -> Result<(), std::io::Error> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let serialized = self.to_string_pretty()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+        let header = "# ~/.config/syncd/config.toml\n# Managed automatically by syncctl or manual editing\n\n";
+        let content = format!("{}{}", header, serialized);
+
+        let tmp_path = path.with_extension("tmp");
+        std::fs::write(&tmp_path, content)?;
+        std::fs::rename(&tmp_path, path)?;
+        Ok(())
+    }
+
     /// Parse a GlobalConfig from a TOML file.
     pub fn from_file(path: &std::path::Path) -> Result<Self, FileConfigError> {
         let content = std::fs::read_to_string(path)?;
@@ -137,6 +173,23 @@ impl GlobalConfig {
             }
         }
         Ok(())
+    }
+}
+
+impl Default for GlobalConfig {
+    fn default() -> Self {
+        Self {
+            socket_path: None,
+            state_dir: None,
+            log_dir: None,
+            log_max_size_bytes: default_log_max_size(),
+            log_max_archives: default_log_max_archives(),
+            max_concurrent_transfers: default_max_concurrent(),
+            default_bandwidth_limit_bps: 0,
+            debounce_quiet_ms: default_debounce_quiet_ms(),
+            debounce_max_wait_ms: default_debounce_max_wait_ms(),
+            folders: Vec::new(),
+        }
     }
 }
 
@@ -160,7 +213,7 @@ pub struct FolderConfig {
 
     /// Gitignore-style patterns; `.syncd-anchor` and `.syncd-tmp-*` are
     /// always appended internally and do not need to appear here.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude_patterns: Vec<String>,
 
     /// When `true` (default), the Empty Folder Safety Lock is active.
@@ -169,15 +222,15 @@ pub struct FolderConfig {
     pub empty_folder_protection: bool,
 
     /// Optional custom S3 / S3-compatible endpoint URL (e.g. MinIO, Cloudflare R2, Wasabi).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
 
     /// Optional S3 region override (e.g. "us-east-1", "auto").
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
 
     /// Allow unencrypted HTTP for local S3 / MinIO testing.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow_http: bool,
 }
 
@@ -236,6 +289,16 @@ pub enum ConfigError {
     #[error("folder '{name}' (id={id}): duplicate folder id in config")]
     DuplicateId { id: Uuid, name: String },
 
+    #[error("duplicate folder name '{name}' (folders must have unique names)")]
+    DuplicateName { name: String },
+
+    #[error("folder '{name}': local_path '{}' collides with folder '{other_name}'", path.display())]
+    DuplicateLocalPath {
+        path: PathBuf,
+        name: String,
+        other_name: String,
+    },
+
     #[error("no folders configured")]
     NoFolders,
 
@@ -258,7 +321,9 @@ pub fn validate_config(cfg: &GlobalConfig) -> Vec<ValidationResult> {
     let mut results = Vec::new();
 
     if cfg.folders.is_empty() {
-        results.push(ValidationResult::Error(ConfigError::NoFolders));
+        results.push(ValidationResult::Warning(
+            "No folders configured. syncd will remain idle until a folder is added.".to_string(),
+        ));
         return results;
     }
 
@@ -270,7 +335,30 @@ pub fn validate_config(cfg: &GlobalConfig) -> Vec<ValidationResult> {
                 id: f.id,
                 name: f.name.clone(),
             }));
-            let _ = prev_name; // already recorded by insert
+            let _ = prev_name;
+        }
+    }
+
+    // Detect duplicate folder names (case-insensitive)
+    let mut seen_names: std::collections::HashMap<String, &str> = Default::default();
+    for f in &cfg.folders {
+        let key = f.name.trim().to_lowercase();
+        if let Some(_prev) = seen_names.insert(key, &f.name) {
+            results.push(ValidationResult::Error(ConfigError::DuplicateName {
+                name: f.name.clone(),
+            }));
+        }
+    }
+
+    // Detect duplicate local paths
+    let mut seen_paths: std::collections::HashMap<PathBuf, &str> = Default::default();
+    for f in &cfg.folders {
+        if let Some(prev_name) = seen_paths.insert(f.local_path.clone(), &f.name) {
+            results.push(ValidationResult::Error(ConfigError::DuplicateLocalPath {
+                path: f.local_path.clone(),
+                name: f.name.clone(),
+                other_name: prev_name.to_string(),
+            }));
         }
     }
 
@@ -293,8 +381,7 @@ pub fn validate_config(cfg: &GlobalConfig) -> Vec<ValidationResult> {
         let a = folders[i];
         let a_target = normalise(&a.remote_target);
 
-        for j in (i + 1)..folders.len() {
-            let b = folders[j];
+        for b in &folders[(i + 1)..] {
             let b_target = normalise(&b.remote_target);
 
             if a_target == b_target {
@@ -391,4 +478,125 @@ unsafe fn libc_getuid() -> u32 {
         fn getuid() -> u32;
     }
     getuid()
+}
+
+// ─────────────────────────────────────────────
+// Tests
+// ─────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_global_config_roundtrip() {
+        let mut config = GlobalConfig::default();
+        config.folders.push(FolderConfig {
+            id: Uuid::new_v4(),
+            name: "docs".to_string(),
+            local_path: PathBuf::from("/home/user/Documents"),
+            remote_target: "s3://my-bucket/docs".to_string(),
+            mode: SyncMode::ContinuousBackup,
+            exclude_patterns: vec![".git/".to_string(), "*.tmp".to_string()],
+            empty_folder_protection: true,
+            endpoint: Some("https://s3.example.com".to_string()),
+            region: Some("us-west-2".to_string()),
+            allow_http: false,
+        });
+
+        let serialized = config.to_string_pretty().expect("failed to serialize");
+        let deserialized: GlobalConfig = toml::from_str(&serialized).expect("failed to deserialize");
+
+        assert_eq!(deserialized.folders.len(), 1);
+        assert_eq!(deserialized.folders[0].name, "docs");
+        assert_eq!(deserialized.folders[0].local_path, PathBuf::from("/home/user/Documents"));
+        assert_eq!(deserialized.folders[0].remote_target, "s3://my-bucket/docs");
+        assert_eq!(deserialized.folders[0].mode, SyncMode::ContinuousBackup);
+        assert_eq!(deserialized.folders[0].endpoint.as_deref(), Some("https://s3.example.com"));
+    }
+
+    #[test]
+    fn test_save_and_load_file() {
+        let dir = std::env::temp_dir().join(format!("syncd_test_{}", Uuid::new_v4()));
+        let config_file = dir.join("config.toml");
+
+        let mut config = GlobalConfig::default();
+        config.folders.push(FolderConfig {
+            id: Uuid::new_v4(),
+            name: "test".to_string(),
+            local_path: PathBuf::from("/tmp/test"),
+            remote_target: "s3://bucket/test".to_string(),
+            mode: SyncMode::DropAndPurge,
+            exclude_patterns: vec![],
+            empty_folder_protection: false,
+            endpoint: None,
+            region: None,
+            allow_http: true,
+        });
+
+        config.save_to_file(&config_file).expect("save_to_file failed");
+        assert!(config_file.exists());
+
+        let loaded = GlobalConfig::from_file(&config_file).expect("from_file failed");
+        assert_eq!(loaded.folders.len(), 1);
+        assert_eq!(loaded.folders[0].name, "test");
+        assert_eq!(loaded.folders[0].mode, SyncMode::DropAndPurge);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_validate_detects_duplicate_names() {
+        let mut config = GlobalConfig::default();
+        config.folders.push(FolderConfig {
+            id: Uuid::new_v4(),
+            name: "Docs".to_string(),
+            local_path: PathBuf::from("/home/user/Docs1"),
+            remote_target: "s3://b/1".to_string(),
+            ..Default::default()
+        });
+        config.folders.push(FolderConfig {
+            id: Uuid::new_v4(),
+            name: "docs".to_string(), // case-insensitive duplicate!
+            local_path: PathBuf::from("/home/user/Docs2"),
+            remote_target: "s3://b/2".to_string(),
+            ..Default::default()
+        });
+
+        let results = validate_config(&config);
+        let has_dup = results.iter().any(|r| matches!(r, ValidationResult::Error(ConfigError::DuplicateName { .. })));
+        assert!(has_dup, "expected DuplicateName error");
+    }
+
+    #[test]
+    fn test_validate_detects_duplicate_paths() {
+        let mut config = GlobalConfig::default();
+        config.folders.push(FolderConfig {
+            id: Uuid::new_v4(),
+            name: "Folder1".to_string(),
+            local_path: PathBuf::from("/home/user/Docs"),
+            remote_target: "s3://b/1".to_string(),
+            ..Default::default()
+        });
+        config.folders.push(FolderConfig {
+            id: Uuid::new_v4(),
+            name: "Folder2".to_string(),
+            local_path: PathBuf::from("/home/user/Docs"),
+            remote_target: "s3://b/2".to_string(),
+            ..Default::default()
+        });
+
+        let results = validate_config(&config);
+        let has_dup = results.iter().any(|r| matches!(r, ValidationResult::Error(ConfigError::DuplicateLocalPath { .. })));
+        assert!(has_dup, "expected DuplicateLocalPath error");
+    }
+
+    #[test]
+    fn test_validate_empty_folders_is_warning() {
+        let config = GlobalConfig::default();
+        let results = validate_config(&config);
+        assert_eq!(results.len(), 1);
+        assert!(matches!(results[0], ValidationResult::Warning(_)));
+        assert!(config.validate().is_ok());
+    }
 }

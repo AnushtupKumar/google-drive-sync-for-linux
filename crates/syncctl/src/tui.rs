@@ -66,6 +66,11 @@ enum Modal {
         tracked: u64,
         safety_armed: bool,
     },
+    ConfirmDeleteFolder {
+        folder_id: Uuid,
+        folder_name: String,
+    },
+    AddFolderHelp,
     Help,
 }
 
@@ -282,6 +287,23 @@ pub async fn run_tui(socket_path: PathBuf) -> Result<()> {
                                 flash_msg = flash("Bandwidth → 5 MiB/s", Color::Cyan);
                             }
 
+                            KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Char('x') | KeyCode::Char('X') => {
+                                if let Some(snap) = &snapshot {
+                                    if let Some(f) = snap.folders.get(selected_idx) {
+                                        modal = Modal::ConfirmDeleteFolder {
+                                            folder_id: f.folder_id,
+                                            folder_name: f.name.clone(),
+                                        };
+                                    } else {
+                                        flash_msg = flash("No folder selected", Color::DarkYellow);
+                                    }
+                                }
+                            }
+
+                            KeyCode::Char('a') | KeyCode::Char('A') => {
+                                modal = Modal::AddFolderHelp;
+                            }
+
                             KeyCode::Char('?') => {
                                 modal = Modal::Help;
                             }
@@ -375,6 +397,42 @@ pub async fn run_tui(socket_path: PathBuf) -> Result<()> {
                     // ── Folder details modal ────────────────────────────────
                     Modal::FolderDetails { .. } => {
                         // Any key dismisses folder details
+                        modal = Modal::None;
+                    }
+
+                    // ── Confirm delete folder modal ─────────────────────────
+                    Modal::ConfirmDeleteFolder { folder_id, folder_name } => {
+                        match key.code {
+                            KeyCode::Esc => {
+                                modal = Modal::None;
+                            }
+                            KeyCode::Enter => {
+                                let fid = *folder_id;
+                                let name = folder_name.clone();
+                                modal = Modal::None;
+
+                                let config_path = sync_common::config::GlobalConfig::default_config_path();
+                                match sync_common::config::GlobalConfig::from_file(&config_path) {
+                                    Ok(mut cfg) => {
+                                        cfg.folders.retain(|f| f.id != fid);
+                                        if let Err(e) = cfg.save_to_file(&config_path) {
+                                            flash_msg = flash(format!("Failed saving config: {}", e), Color::Red);
+                                        } else {
+                                            let _ = writer.send(IpcRequest::ReloadConfig).await;
+                                            flash_msg = flash(format!("✓ Removed folder '{}'", name), Color::Green);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        flash_msg = flash(format!("Failed reading config: {}", e), Color::Red);
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // ── Add folder info modal ───────────────────────────────
+                    Modal::AddFolderHelp => {
                         modal = Modal::None;
                     }
 
@@ -806,6 +864,40 @@ fn draw_ui(
                 ],
             )?;
         }
+        Modal::ConfirmDeleteFolder { folder_name, .. } => {
+            draw_dialog(
+                &mut out,
+                term_w,
+                term_h,
+                "⚠  Confirm Folder Removal",
+                &[
+                    &format!("  Are you sure you want to remove folder '{}'?", folder_name),
+                    "  This stops watching and offloading for this folder.",
+                    "  (Local and cloud files will remain untouched)",
+                    "",
+                    "  [Enter] Confirm & Remove   [Esc] Cancel",
+                ],
+            )?;
+        }
+        Modal::AddFolderHelp => {
+            draw_dialog(
+                &mut out,
+                term_w,
+                term_h,
+                "+  Add Watched Folder",
+                &[
+                    "  To add a folder to syncd, exit the TUI and run:",
+                    "",
+                    "    syncctl folder add",
+                    "",
+                    "  or launch the interactive console:",
+                    "",
+                    "    syncctl folder",
+                    "",
+                    "  [Enter / Esc] Close",
+                ],
+            )?;
+        }
         Modal::Help => {
             draw_dialog(
                 &mut out,
@@ -818,6 +910,8 @@ fn draw_ui(
                     "  Enter / i   View selected folder properties & details",
                     "  P           Pause selected folder (or Resume if already paused)",
                     "  R           Resume selected folder",
+                    "  A           How to add a new folder",
+                    "  D / x       Delete / remove selected folder from configuration",
                     "  B           Open bandwidth-limit dialog",
                     "  S           Trigger reconciliation scan",
                     "  0           Remove bandwidth cap (Unlimited)",
@@ -838,7 +932,7 @@ fn draw_ui(
         .unwrap_or("[P] Pause");
 
     let footer = format!(
-        " [↑/↓] Select  •  [Enter/i] Details  •  {}  •  [B] Bandwidth  •  [S] Scan  •  [0/1/5] Limits  •  [?] Help  •  [Q] Quit",
+        " [↑/↓] Select  •  [Enter/i] Details  •  {}  •  [A] Add  •  [D] Delete  •  [B] Bw  •  [S] Scan  •  [?] Help  •  [Q] Quit",
         pause_hint
     );
     queue!(
@@ -859,7 +953,7 @@ fn draw_ui(
 // State display helper
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn folder_state_display(state: &FolderState) -> (String, Color) {
+pub fn folder_state_display(state: &FolderState) -> (String, Color) {
     match state {
         FolderState::Watching => ("Watching".into(), Color::Green),
         FolderState::Syncing => ("Syncing (upload)".into(), Color::Cyan),

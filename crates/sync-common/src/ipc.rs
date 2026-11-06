@@ -59,6 +59,9 @@ pub enum IpcRequest {
 
     /// Trigger an immediate full reconciliation walk for one or all folders.
     TriggerScan { folder_id: Option<Uuid> },
+
+    /// Reload configuration from disk and reconfigure active folder actors.
+    ReloadConfig,
 }
 
 /// Responses sent from `syncd` → `syncctl`.
@@ -309,6 +312,12 @@ mod tests {
             duration_secs: Some(30),
         });
         assert!(matches!(rt, IpcRequest::Pause { folder_id: Some(_), duration_secs: Some(30) }));
+    }
+
+    #[test]
+    fn request_roundtrip_reload_config() {
+        let rt = encode_decode_request(IpcRequest::ReloadConfig);
+        assert!(matches!(rt, IpcRequest::ReloadConfig));
     }
 
     #[test]

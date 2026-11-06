@@ -29,7 +29,7 @@ use backon::{ExponentialBuilder, Retryable};
 use object_store::{
     path::Path as OsPath, ObjectStore, PutPayload,
 };
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use url::Url;
 
 use super::{
@@ -58,6 +58,7 @@ fn is_retryable(e: &StorageError) -> bool {
             )
         }
         StorageError::Io(_) => true,
+        StorageError::Rclone(_) => true,
         // Size/hash mismatches are logic errors, not transient
         _ => false,
     }
@@ -133,6 +134,27 @@ impl ObjectStoreBackend {
                     reason: "Invalid file URL path".to_owned(),
                 })?;
                 std::fs::create_dir_all(&path)?;
+
+                // Detect if the directory is on an rclone FUSE mount
+                if let Ok(mounts) = proc_mounts::MountIter::new() {
+                    for mount in mounts.flatten() {
+                        if path.starts_with(&mount.dest) && mount.fstype == "fuse.rclone" {
+                            warn!(
+                                path = %path.display(),
+                                mount = %mount.dest.display(),
+                                source = %mount.source.display(),
+                                "Destination folder is on an rclone FUSE mount (fuse.rclone). \
+                                 File writes are buffered locally by rclone VFS and uploaded asynchronously \
+                                 in the background, causing instant upload blinks in syncd. \
+                                 Recommendation: use remote_target = \"rclone://{}/<folder>\" for direct sync \
+                                 with real-time progress and without needing to keep rclone mounted.",
+                                mount.source.display()
+                            );
+                            break;
+                        }
+                    }
+                }
+
                 let local = object_store::local::LocalFileSystem::new_with_prefix(&path)
                     .map_err(StorageError::ObjectStore)?;
                 prefix = String::new();

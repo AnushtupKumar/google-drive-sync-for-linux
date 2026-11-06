@@ -48,6 +48,13 @@ if ! command -v cargo &>/dev/null; then
 fi
 log_success "Rust toolchain found: $(cargo --version)"
 
+# Check optional rclone support
+if command -v rclone &>/dev/null; then
+    log_success "rclone found: $(rclone --version | head -n 1)"
+else
+    log_info "Optional: 'rclone' not found. Install rclone if you plan to sync with Google Drive, OneDrive, Dropbox, etc."
+fi
+
 # Check systemd user session
 if ! command -v systemctl &>/dev/null; then
     log_warn "'systemctl' command not found. Daemon unit installation may fail."
@@ -75,6 +82,13 @@ mkdir -p "$BIN_INSTALL_DIR"
 install -m 755 "$SYNCD_BIN" "${BIN_INSTALL_DIR}/syncd"
 install -m 755 "$SYNCCTL_BIN" "${BIN_INSTALL_DIR}/syncctl"
 log_success "Installed 'syncd' and 'syncctl' into ${BIN_INSTALL_DIR}/"
+
+# Also install to ~/.cargo/bin if present in user environment
+if [[ -d "${HOME}/.cargo/bin" ]]; then
+    install -m 755 "$SYNCD_BIN" "${HOME}/.cargo/bin/syncd"
+    install -m 755 "$SYNCCTL_BIN" "${HOME}/.cargo/bin/syncctl"
+    log_success "Also updated binaries in ${HOME}/.cargo/bin/"
+fi
 
 # ── 4. Set Up Configuration ───────────────────────────────────────────────────
 log_info "Configuring syncd daemon..."
@@ -127,10 +141,13 @@ echo -e "${GREEN}${BOLD}Installation Complete!${RESET}"
 echo ""
 echo "Quick Commands:"
 echo "  • Open Interactive TUI Dashboard:    syncctl"
+echo "  • Manage Folders (Interactive CLI):  syncctl folder"
+echo "  • Real-Time Upload Monitor:          syncctl watch"
 echo "  • Check Status via CLI:              syncctl status"
-echo "  • Launch Web Dashboard (Browser):   syncctl web"
+echo "  • Reload Daemon After Config Edit:   syncctl reload"
+echo "  • Launch Web Dashboard (Browser):    syncctl web"
 echo "  • View Live Daemon Logs:             journalctl --user -u syncd -f"
-echo "  • Edit Sync Folders Config:          nano ~/.config/syncd/config.toml"
-echo "  • Reload After Config Change:        systemctl --user restart syncd"
+echo "  • Edit Sync Folders Config:          syncctl folder edit <NAME>  (or nano ~/.config/syncd/config.toml)"
+echo "  • Restart Daemon Service:            systemctl --user restart syncd"
 echo ""
 

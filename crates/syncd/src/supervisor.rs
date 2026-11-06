@@ -20,13 +20,14 @@ use crate::{
     logging::{notify_critical, notify_info, notify_warn},
     offload::{self, TaskContext},
     safety::{self, SafetyError},
-    storage::{rclone::ObjectStoreBackend, BandwidthLimiter, CloudStorage},
+    storage::{create_storage_backend, BandwidthLimiter, CloudStorage},
     watcher::{self, FolderWatcher},
 };
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use sqlx::SqlitePool;
 use std::{
     collections::HashMap,
+    path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -109,6 +110,7 @@ struct FolderActorState {
 // ─────────────────────────────────────────────
 
 pub struct Supervisor {
+    config_path: Option<PathBuf>,
     config: Arc<RwLock<GlobalConfig>>,
     pool: SqlitePool,
     cancel: CancellationToken,
@@ -126,6 +128,7 @@ impl Supervisor {
     /// Bootstraps the supervisor actor system.
     pub async fn new(
         config: GlobalConfig,
+        config_path: Option<PathBuf>,
         pool: SqlitePool,
         cancel: CancellationToken,
     ) -> Result<Arc<Self>, SupervisorError> {
@@ -149,6 +152,7 @@ impl Supervisor {
         let (telemetry_tx, _) = broadcast::channel(32);
 
         let supervisor = Arc::new(Self {
+            config_path,
             config: Arc::new(RwLock::new(config.clone())),
             pool,
             cancel: cancel.clone(),
@@ -192,9 +196,9 @@ impl Supervisor {
             db::upsert_folder(&self.pool, cfg).await?;
 
             // Setup storage backend
-            match ObjectStoreBackend::from_folder_config(cfg) {
+            match create_storage_backend(cfg) {
                 Ok(storage) => {
-                    self.storages.write().await.insert(cfg.id, Arc::new(storage));
+                    self.storages.write().await.insert(cfg.id, storage);
                 }
                 Err(e) => {
                     warn!(folder_id = %cfg.id, "Cloud storage init failed: {}", e);
@@ -1033,6 +1037,31 @@ impl Supervisor {
         *self.config.write().await = new_config;
         info!("Live configuration reload complete");
         Ok(())
+    }
+
+    /// Reloads configuration directly from the config file on disk.
+    pub async fn reload_from_disk(&self) -> Result<String, SupervisorError> {
+        let path = self
+            .config_path
+            .clone()
+            .unwrap_or_else(GlobalConfig::default_config_path);
+
+        if !path.exists() {
+            return Err(SupervisorError::Config(format!(
+                "Configuration file '{}' does not exist",
+                path.display()
+            )));
+        }
+
+        let new_cfg = GlobalConfig::from_file(&path)
+            .map_err(|e| SupervisorError::Config(e.to_string()))?;
+        let count = new_cfg.folders.len();
+        self.reload_config(new_cfg).await?;
+        Ok(format!(
+            "Configuration reloaded successfully ({} active folder{})",
+            count,
+            if count == 1 { "" } else { "s" }
+        ))
     }
 }
 

@@ -275,6 +275,32 @@ mode = "drop_and_purge"
 empty_folder_protection = false
 ```
 
+### 4. Rclone Direct Remotes (Google Drive, Dropbox, OneDrive, etc.)
+
+Direct sync with any cloud provider configured in `rclone` (Google Drive, Dropbox, OneDrive, Box, pCloud, WebDAV, Nextcloud) **without** running `rclone mount` or FUSE daemons. Uploads stream directly over the network with true real-time byte progress:
+
+```toml
+[[folders]]
+id = "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d"
+name = "documents"
+local_path = "/home/anushtup/Documents"
+remote_target = "rclone://gdrive/Documents"
+mode = "continuous_backup"
+empty_folder_protection = true
+
+[[folders]]
+id = "f6e5d4c3-b2a1-0f9e-8d7c-6b5a4f3e2d1c"
+name = "renders-dropzone"
+local_path = "/home/anushtup/Renders"
+remote_target = "rclone://gdrive/renders"
+mode = "drop_and_purge"
+empty_folder_protection = false
+```
+
+> [!NOTE]
+> **Why `rclone://` instead of `file://<mount>`?**
+> When mounting via `rclone mount --vfs-cache-mode writes`, local file operations write to a local SSD cache (`~/.cache/rclone/vfs/...`) and return immediately before uploading over the internet, causing an instant 100% "blink" in progress counters and potentially premature deletion in Drop & Purge mode. Using `rclone://<remote>/<folder>` uploads directly over the network with real-time speed/progress and true remote persistence verification.
+
 ---
 
 ## Sync Modes vs. Safety Lock Explained
@@ -317,11 +343,12 @@ syncctl
 * `Enter` or `i`: Inspect folder properties (UUID, mode, baseline count, safety lock status, local/remote paths).
 * `p`: Open timed pause modal for the selected folder (e.g. `15m`, `1h`, or indefinite).
 * `r`: Resume synchronization for the selected folder.
+* `a`: Quick instructions to add a new folder to configuration.
+* `d` / `x`: Delete and remove the selected folder from configuration with confirmation dialog.
 * `b`: Open global bandwidth rate-limit modal dialog.
 * `s`: Trigger an immediate recursive reconciliation scan on the selected folder.
 * `0` / `1` / `5`: Quick-keys to set bandwidth to Unlimited, 1 MB/s, or 5 MB/s.
-* `q` / `Ctrl+C`: Exit cleanly and restore terminal screen buffer.
-* `0` / `1` / `5`: Instant quick-keys to set bandwidth to Unlimited, 1 MB/s, or 5 MB/s.
+* `?`: Show keyboard reference help overlay.
 * `q` / `Ctrl+C`: Exit cleanly and restore terminal screen buffer.
 
 ### 2. Embedded Web Dashboard (`syncctl web`)
@@ -335,7 +362,85 @@ syncctl web --bind 0.0.0.0 --port 9090
 ```
 Open `http://127.0.0.1:8384` in any browser to inspect metrics, active transfer progress bars, and trigger actions (Pause, Resume, Bandwidth Limit, Re-Scan) with one click.
 
-### 3. Non-Interactive CLI Commands
+### 3. Folder Management CLI & Console (`syncctl folder`)
+
+Manage watched folders directly from the terminal without editing configuration files manually. Includes interactive wizards, configuration validation, collision protection, and automatic daemon reloads.
+
+#### Interactive Console Menu
+Launch the interactive terminal console to manage all folders with single-key menu choices:
+```bash
+syncctl folder
+# or: syncctl folder menu / ui
+```
+
+#### List Configured Folders
+View all watched folders, sync modes, safety lock status, and daemon states:
+```bash
+syncctl folder list
+syncctl folder list --verbose    # Extended details (UUIDs, excludes, endpoints)
+```
+
+#### Add a New Folder
+Launch the step-by-step interactive wizard:
+```bash
+syncctl folder add
+```
+Or specify parameters directly via CLI flags:
+```bash
+# Add a continuous backup folder:
+syncctl folder add \
+  --name documents \
+  --path ~/Documents \
+  --target s3://my-backup-bucket/documents \
+  --mode backup
+
+# Add a safe drop & purge offload folder:
+syncctl folder add \
+  --name renders \
+  --path ~/Renders \
+  --target gs://archive-bucket/renders \
+  --mode offload \
+  --exclude "*.tmp" --exclude "*.crdownload"
+
+# Add folder with custom S3 / MinIO / Cloudflare R2 endpoint:
+syncctl folder add \
+  --name r2-sync \
+  --path ~/Projects \
+  --target s3://projects-bucket/work \
+  --endpoint https://<account_id>.r2.cloudflarestorage.com \
+  --region auto
+```
+
+#### Inspect Folder Details
+Display comprehensive configuration and live runtime telemetry for a folder:
+```bash
+syncctl folder show documents
+syncctl folder show <FOLDER_UUID>
+```
+
+#### Edit an Existing Folder
+Update folder settings interactively or via flags without touching the TOML file:
+```bash
+syncctl folder edit documents
+syncctl folder edit documents --target s3://new-bucket/documents --mode offload
+```
+
+#### Remove a Folder
+Safely remove a folder from configuration and stop syncing it (local & remote files remain untouched):
+```bash
+syncctl folder remove documents
+syncctl folder remove documents --yes   # Skip confirmation prompt
+```
+
+#### Reload Daemon Configuration
+Apply configuration changes to the running daemon without restarting the process:
+```bash
+syncctl reload
+```
+
+---
+
+### 4. Non-Interactive CLI Commands
 
 #### Status Overview
 Inspect folder states, device status, pending queues, and active transfers:

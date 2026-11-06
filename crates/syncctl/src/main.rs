@@ -19,6 +19,7 @@ use sync_common::{
 use tokio::net::UnixStream;
 use uuid::Uuid;
 
+pub mod folder;
 pub mod tui;
 pub mod web;
 
@@ -36,6 +37,10 @@ struct Cli {
     /// Custom path to syncd Unix domain socket
     #[arg(short, long, value_name = "SOCKET")]
     socket: Option<PathBuf>,
+
+    /// Custom path to syncd configuration file
+    #[arg(short, long, value_name = "CONFIG")]
+    config: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -57,6 +62,13 @@ enum Commands {
         #[arg(short, long, default_value_t = 8384)]
         port: u16,
     },
+
+    /// Manage watched folders (wizard, list, add, remove, inspect, edit)
+    #[command(alias = "folders")]
+    Folder(folder::FolderArgs),
+
+    /// Reload syncd daemon configuration from disk
+    Reload,
 
     /// Show current daemon status, watched folders, and in-flight transfers
     Status,
@@ -147,6 +159,10 @@ async fn main() -> Result<()> {
                 .with_context(|| format!("Invalid bind address '{}:{}'", bind, port))?;
             web::run_web_server(socket, addr).await?;
         }
+        Commands::Folder(args) => {
+            folder::handle_folder_command(cli.config, cli.socket, args.command).await?;
+        }
+        Commands::Reload => cmd_reload(cli.socket).await?,
         Commands::Status => cmd_status(cli.socket).await?,
         Commands::Watch => cmd_watch(cli.socket).await?,
         Commands::Pause { folder, r#for } => cmd_pause(cli.socket, folder, r#for).await?,
@@ -269,6 +285,12 @@ async fn cmd_scan(socket: Option<PathBuf>, folder: Option<String>) -> Result<()>
     let folder_id = resolve_folder_id(&mut reader, &mut writer, folder).await?;
 
     writer.send(IpcRequest::TriggerScan { folder_id }).await?;
+    handle_ok_response(reader.next().await).await
+}
+
+async fn cmd_reload(socket: Option<PathBuf>) -> Result<()> {
+    let (mut reader, mut writer) = connect_to_daemon(socket).await?;
+    writer.send(IpcRequest::ReloadConfig).await?;
     handle_ok_response(reader.next().await).await
 }
 

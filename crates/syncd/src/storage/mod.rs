@@ -20,6 +20,7 @@
 //! acquiring tokens before each read so the byte rate is bounded.
 
 pub mod rclone;
+pub mod rclone_cli;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -86,6 +87,11 @@ impl BandwidthLimiter {
         // prevented above by capping to burst_bytes.
         let _ = self.inner.until_n_ready(capped).await;
     }
+
+    /// Return the maximum tokens / bytes permitted per burst.
+    pub fn burst_bytes(&self) -> u32 {
+        self.burst_bytes
+    }
 }
 
 // ─────────────────────────────────────────────
@@ -97,7 +103,7 @@ pub enum StorageError {
     #[error("invalid remote target URL '{url}': {reason}")]
     InvalidUrl { url: String, reason: String },
 
-    #[error("unsupported URL scheme '{scheme}' (supported: s3, gs, az, https)")]
+    #[error("unsupported URL scheme '{scheme}' (supported: s3, gs, az, https, rclone, file)")]
     UnsupportedScheme { scheme: String },
 
     #[error("object store error: {0}")]
@@ -111,6 +117,9 @@ pub enum StorageError {
 
     #[error("SHA-256 mismatch after upload: local {local}, remote {remote}")]
     HashMismatch { local: String, remote: String },
+
+    #[error("rclone execution error: {0}")]
+    Rclone(String),
 }
 
 // ─────────────────────────────────────────────
@@ -214,7 +223,7 @@ pub async fn read_file_with_limit(
     // Choose chunk size: if rate-limited, cap to burst capacity so we never
     // request more tokens than the limiter can ever grant.
     let chunk_size: usize = if let Some(lim) = limiter {
-        (lim.burst_bytes as usize).min(256 * 1024).max(4 * 1024)
+        (lim.burst_bytes as usize).clamp(4 * 1024, 256 * 1024)
     } else {
         256 * 1024 // 256 KiB default
     };
@@ -251,6 +260,40 @@ pub async fn read_file_with_limit(
     Ok((Bytes::from(buf), sha256_hex))
 }
 
+// ─────────────────────────────────────────────
+// Storage backend factory
+// ─────────────────────────────────────────────
+
+/// Construct an appropriate [`CloudStorage`] backend for the given [`sync_common::config::FolderConfig`].
+///
+/// Automatically dispatches:
+/// - `rclone://<remote>/<prefix>` → [`rclone_cli::RcloneBackend`]
+/// - `s3://`, `gs://`, `az://`, `file://`, `https://` → [`rclone::ObjectStoreBackend`]
+pub fn create_storage_backend(
+    cfg: &sync_common::config::FolderConfig,
+) -> Result<Arc<dyn CloudStorage>, StorageError> {
+    if cfg.remote_target.trim().starts_with("rclone://") {
+        let backend = rclone_cli::RcloneBackend::from_folder_config(cfg)?;
+        Ok(Arc::new(backend))
+    } else {
+        let backend = rclone::ObjectStoreBackend::from_folder_config(cfg)?;
+        Ok(Arc::new(backend))
+    }
+}
+
+/// Construct an appropriate [`CloudStorage`] backend for a raw `remote_target` URI string.
+pub fn create_storage_backend_from_target(
+    remote_target: &str,
+) -> Result<Arc<dyn CloudStorage>, StorageError> {
+    if remote_target.trim().starts_with("rclone://") {
+        let backend = rclone_cli::RcloneBackend::from_remote_target(remote_target)?;
+        Ok(Arc::new(backend))
+    } else {
+        let backend = rclone::ObjectStoreBackend::from_remote_target(remote_target)?;
+        Ok(Arc::new(backend))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,5 +318,16 @@ mod tests {
         assert_eq!(data.len(), 1024 * 1024);
         assert_eq!(progress.load(Ordering::Relaxed), 1024 * 1024);
         assert!(!hash.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_create_storage_backend_dispatch() {
+        let rclone_backend = create_storage_backend_from_target("rclone://gdrive/Documents").unwrap();
+        assert_eq!(rclone_backend.remote_key_for("test.txt"), "Documents/test.txt");
+
+        let file_dir = tempfile::tempdir().unwrap();
+        let file_url = format!("file://{}", file_dir.path().display());
+        let file_backend = create_storage_backend_from_target(&file_url).unwrap();
+        assert_eq!(file_backend.remote_key_for("test.txt"), "test.txt");
     }
 }

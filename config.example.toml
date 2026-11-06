@@ -32,13 +32,21 @@ debounce_max_wait_ms = 60000
 # ─────────────────────────────────────────────────────────────────────────────
 # Watched Folder Configurations
 # ─────────────────────────────────────────────────────────────────────────────
+#
+# Supported remote_target schemes:
+#   • rclone://<remote>/<folder>  (Google Drive, Dropbox, OneDrive, etc. via rclone)
+#   • s3://<bucket>/<prefix>      (AWS S3, MinIO, Cloudflare R2)
+#   • gs://<bucket>/<prefix>      (Google Cloud Storage)
+#   • az://<container>/<prefix>   (Azure Blob Storage)
+#   • file:///path/to/destination (Local filesystem or NFS share)
+#
 
 # Folder 1: Continuous 1-way backup with non-destructive cloud trash archiving
 [[folders]]
 id = "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d"
 name = "documents"
 local_path = "/home/anushtup/Documents"
-remote_target = "s3://my-company-backup/workstation/documents"
+remote_target = "rclone://gdrive/Documents"
 mode = "continuous_backup"
 exclude_patterns = [
     ".git/",

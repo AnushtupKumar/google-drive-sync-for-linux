@@ -122,10 +122,10 @@ pub async fn run_backup_upload(ctx: &TaskContext) -> Result<(), OffloadError> {
 
     // Check if the local file exists. If it was deleted/moved before upload:
     if !abs_path.exists() {
-        let is_synced = match db::get_synced_file(&ctx.pool, ctx.folder_id, &ctx.rel_path).await {
-            Ok(Some(_)) => true,
-            _ => false,
-        };
+        let is_synced = matches!(
+            db::get_synced_file(&ctx.pool, ctx.folder_id, &ctx.rel_path).await,
+            Ok(Some(_))
+        );
 
         if is_synced {
             info!(

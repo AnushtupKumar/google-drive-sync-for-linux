@@ -193,6 +193,20 @@ async fn execute_request(
                 }
             }
         }
+
+        IpcRequest::ReloadConfig => {
+            match supervisor.reload_from_disk().await {
+                Ok(msg) => {
+                    writer.send(IpcResponse::Ok { message: msg }).await?;
+                }
+                Err(e) => {
+                    writer.send(IpcResponse::Error {
+                        code: IpcErrorCode::InternalError,
+                        message: e.to_string(),
+                    }).await?;
+                }
+            }
+        }
     }
 
     Ok(())
@@ -241,7 +255,7 @@ async fn handle_connection(
                                 update = sub.recv() => {
                                     match update {
                                         Ok(snapshot) => {
-                                            if let Err(_) = writer.send(IpcResponse::TelemetryUpdate(snapshot)).await {
+                                            if writer.send(IpcResponse::TelemetryUpdate(snapshot)).await.is_err() {
                                                 break; // Client disconnected
                                             }
                                         }
