@@ -571,18 +571,17 @@ fn draw_ui(
     // Column widths (in terminal display columns, not bytes or codepoints)
     const NAME_W: usize = 20;
     const STATE_W: usize = 18;
-    const MODE_W: usize = 10;
+    const MODE_W: usize = 14;
     const PEND_W: usize = 7;
     const SYNCED_W: usize = 7;
-    const SAFETY_W: usize = 8;
-    const PATH_W: usize = 28;
+    const PATH_W: usize = 36;
 
     // Table header row
     if row <= content_bottom {
         let hdr = format!(
-            "   {:<name$} {:<state$} {:<mode$} {:<pend$} {:<tracked$} {:<safety$} {}",
-            "Name", "State", "Mode", "Pending", "Tracked", "Safety", "Local Path",
-            name = NAME_W, state = STATE_W, mode = MODE_W, pend = PEND_W, tracked = SYNCED_W, safety = SAFETY_W,
+            "   {:<name$} {:<state$} {:<mode$} {:<pend$} {:<tracked$} {}",
+            "Name", "State", "Mode", "Pending", "Tracked", "Local Path",
+            name = NAME_W, state = STATE_W, mode = MODE_W, pend = PEND_W, tracked = SYNCED_W,
         );
         queue!(
             out,
@@ -617,27 +616,30 @@ fn draw_ui(
 
                 let is_selected = idx == selected_idx;
                 let (state_str, state_color) = folder_state_display(&f.state);
-                // Safety column: use ASCII for alignment; emoji are 2-wide
-                let safety_str = if f.safety_lock_armed { "LOCK ON" } else { "   OFF " };
                 let marker = if is_selected { "▶" } else { " " };
 
                 // Build each field with display-width-aware padding
                 let name_col = display_truncate_pad(&f.name, NAME_W);
                 let state_col = display_truncate_pad(&state_str, STATE_W);
                 let mode_badge = match f.sync_mode.as_str() {
-                    "continuous_backup" => "[BACKUP]",
+                    "continuous_backup" => {
+                        if f.safety_lock_armed {
+                            "[BACKUP:SAFE]"
+                        } else {
+                            "[BACKUP]"
+                        }
+                    }
                     "drop_and_purge" => "[OFFLOAD]",
                     other => other,
                 };
                 let mode_col = display_truncate_pad(mode_badge, MODE_W);
                 let pend_col = display_truncate_pad(&format!("{}", f.pending_tasks), PEND_W);
                 let synced_col = display_truncate_pad(&format!("{}", f.baseline_file_count), SYNCED_W);
-                let safety_col = display_truncate_pad(safety_str, SAFETY_W);
                 let path_col = display_truncate_pad(&f.local_path, PATH_W);
 
                 let line = format!(
-                    " {} {} {} {} {} {} {} {}",
-                    marker, name_col, state_col, mode_col, pend_col, synced_col, safety_col, path_col
+                    " {} {} {} {} {} {} {}",
+                    marker, name_col, state_col, mode_col, pend_col, synced_col, path_col
                 );
 
                 if is_selected {
@@ -853,12 +855,11 @@ fn draw_ui(
                 &[
                     &format!("  Folder ID:     {}", id_str),
                     &format!("  Current State: {}", state),
-                    &format!("  Sync Mode:     {}", mode_desc),
+                    &format!("  Sync Mode:     {} [Safety: {}]", mode_desc, safety_desc),
                     &format!("  Local Path:    {}", local_path),
                     &format!("  Remote Target: {}", remote_target),
                     &format!("  Tracked Files: {}", track_str),
                     &format!("  Pending Tasks: {}", pend_str),
-                    &format!("  Safety Lock:   {}", safety_desc),
                     "",
                     "  [Enter / Esc] Close",
                 ],

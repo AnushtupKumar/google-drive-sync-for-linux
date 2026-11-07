@@ -240,9 +240,12 @@ impl Supervisor {
                 }
 
                 // Count baseline files
+                let synced_count = db::count_synced_files(&self.pool, cfg.id).await.unwrap_or(0);
                 if let Ok(count) = safety::count_visible_files(&cfg.local_path).await {
-                    baseline_count = count;
-                    let _ = db::set_baseline_file_count(&self.pool, cfg.id, count).await;
+                    baseline_count = count.max(synced_count);
+                    let _ = db::set_baseline_file_count(&self.pool, cfg.id, baseline_count).await;
+                } else {
+                    baseline_count = synced_count;
                 }
 
                 // Purge any stale upload tasks whose local files were deleted while syncd was offline
@@ -736,6 +739,11 @@ impl Supervisor {
             let folders = self.folders.read().await;
             for (fid, actor) in folders.iter() {
                 let pending = db::pending_task_count(&self.pool, *fid).await.unwrap_or(0);
+                let synced_count = db::count_synced_files(&self.pool, *fid).await.unwrap_or(0);
+                let tracked = match actor.config.mode {
+                    SyncMode::ContinuousBackup => synced_count.max(actor.baseline_file_count),
+                    SyncMode::DropAndPurge => synced_count,
+                };
                 folder_reports.push(FolderStatusReport {
                     folder_id: *fid,
                     name: actor.config.name.clone(),
@@ -743,7 +751,7 @@ impl Supervisor {
                     remote_target: actor.config.remote_target.clone(),
                     state: actor.state.clone(),
                     sync_mode: actor.config.mode.to_string(),
-                    baseline_file_count: actor.baseline_file_count,
+                    baseline_file_count: tracked,
                     pending_tasks: pending,
                     session_bytes_uploaded: 0,
                     session_bytes_freed: 0,
@@ -985,16 +993,18 @@ impl Supervisor {
             tokio::spawn(async move {
                 if Self::reconcile_folder(&pool, &cfg).await {
                     let _ = db::set_folder_state(&pool, fid, &FolderState::Watching).await;
+                    let visible = safety::count_visible_files(&cfg.local_path).await.unwrap_or(0);
+                    let synced = db::count_synced_files(&pool, fid).await.unwrap_or(0);
                     let mut map = folders_arc.write().await;
                     if let Some(act) = map.get_mut(&fid) {
                         act.state = FolderState::Watching;
+                        act.baseline_file_count = visible.max(synced);
                     }
-                } else {
-                    if let Ok(rec) = db::load_folder(&pool, fid).await {
-                        let mut map = folders_arc.write().await;
-                        if let Some(act) = map.get_mut(&fid) {
-                            act.state = rec.state;
-                        }
+                } else if let Ok(rec) = db::load_folder(&pool, fid).await {
+                    let mut map = folders_arc.write().await;
+                    if let Some(act) = map.get_mut(&fid) {
+                        act.state = rec.state;
+                        act.baseline_file_count = rec.baseline_file_count;
                     }
                 }
             });

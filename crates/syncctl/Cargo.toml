@@ -28,3 +28,4 @@ libc        = { workspace = true }
 crossterm       = { version = "0.29", features = ["event-stream"] }
 unicode-width   = "0.1"
 tracing         = { workspace = true }
+reqwest         = { workspace = true }

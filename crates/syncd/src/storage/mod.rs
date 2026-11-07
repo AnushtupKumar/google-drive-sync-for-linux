@@ -19,6 +19,7 @@
 //! [`read_file_with_limit`] reads the source file in fixed-size chunks,
 //! acquiring tokens before each read so the byte rate is bounded.
 
+pub mod gdrive;
 pub mod rclone;
 pub mod rclone_cli;
 
@@ -52,6 +53,7 @@ use tracing::debug;
 ///
 /// One token ≡ one byte.  Call [`BandwidthLimiter::acquire`] before reading
 /// each chunk; it sleeps until the budget is available.
+#[derive(Clone)]
 pub struct BandwidthLimiter {
     inner: Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>,
     /// Maximum chunk size for `acquire` calls (must fit in `u32`).
@@ -267,12 +269,21 @@ pub async fn read_file_with_limit(
 /// Construct an appropriate [`CloudStorage`] backend for the given [`sync_common::config::FolderConfig`].
 ///
 /// Automatically dispatches:
-/// - `rclone://<remote>/<prefix>` → [`rclone_cli::RcloneBackend`]
+/// - `gdrive://<folder>` or `googledrive://<folder>` → [`gdrive::GoogleDriveBackend`] (pure Rust Google Drive v3)
+/// - `rclone://gdrive/<folder>` → [`gdrive::GoogleDriveBackend`] (natively handled without rclone)
+/// - `rclone://<other_remote>/<prefix>` → [`rclone_cli::RcloneBackend`]
 /// - `s3://`, `gs://`, `az://`, `file://`, `https://` → [`rclone::ObjectStoreBackend`]
 pub fn create_storage_backend(
     cfg: &sync_common::config::FolderConfig,
 ) -> Result<Arc<dyn CloudStorage>, StorageError> {
-    if cfg.remote_target.trim().starts_with("rclone://") {
+    let target = cfg.remote_target.trim();
+    if target.starts_with("gdrive://")
+        || target.starts_with("googledrive://")
+        || target.starts_with("rclone://gdrive")
+    {
+        let backend = gdrive::GoogleDriveBackend::from_folder_config(cfg)?;
+        Ok(Arc::new(backend))
+    } else if target.starts_with("rclone://") {
         let backend = rclone_cli::RcloneBackend::from_folder_config(cfg)?;
         Ok(Arc::new(backend))
     } else {
@@ -285,7 +296,14 @@ pub fn create_storage_backend(
 pub fn create_storage_backend_from_target(
     remote_target: &str,
 ) -> Result<Arc<dyn CloudStorage>, StorageError> {
-    if remote_target.trim().starts_with("rclone://") {
+    let target = remote_target.trim();
+    if target.starts_with("gdrive://")
+        || target.starts_with("googledrive://")
+        || target.starts_with("rclone://gdrive")
+    {
+        let backend = gdrive::GoogleDriveBackend::from_remote_target(remote_target)?;
+        Ok(Arc::new(backend))
+    } else if target.starts_with("rclone://") {
         let backend = rclone_cli::RcloneBackend::from_remote_target(remote_target)?;
         Ok(Arc::new(backend))
     } else {

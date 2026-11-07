@@ -59,7 +59,7 @@ pub enum FolderCommands {
         #[arg(short, long)]
         path: Option<PathBuf>,
 
-        /// Cloud destination URI (e.g. 'rclone://gdrive/Documents', 's3://bucket/path', 'file:///path', 'gs://bucket')
+        /// Cloud destination URI (e.g. 'gdrive://Documents', 's3://bucket/path', 'file:///path', 'gs://bucket')
         #[arg(short, long)]
         target: Option<String>,
 
@@ -275,7 +275,6 @@ pub async fn cmd_list(
             Cell::new("Name").add_attribute(Attribute::Bold),
             Cell::new("Folder ID").add_attribute(Attribute::Bold),
             Cell::new("Mode").add_attribute(Attribute::Bold),
-            Cell::new("Safety").add_attribute(Attribute::Bold),
             Cell::new("State").add_attribute(Attribute::Bold),
             Cell::new("Local Path").add_attribute(Attribute::Bold),
             Cell::new("Remote Target").add_attribute(Attribute::Bold),
@@ -286,7 +285,6 @@ pub async fn cmd_list(
             Cell::new("#").add_attribute(Attribute::Bold),
             Cell::new("Name").add_attribute(Attribute::Bold),
             Cell::new("Mode").add_attribute(Attribute::Bold),
-            Cell::new("Safety").add_attribute(Attribute::Bold),
             Cell::new("State").add_attribute(Attribute::Bold),
             Cell::new("Local Path").add_attribute(Attribute::Bold),
             Cell::new("Remote Target").add_attribute(Attribute::Bold),
@@ -294,15 +292,10 @@ pub async fn cmd_list(
     }
 
     for (idx, f) in config.folders.iter().enumerate() {
-        let mode_str = match f.mode {
-            SyncMode::ContinuousBackup => "Backup",
-            SyncMode::DropAndPurge => "Offload",
-        };
-
-        let safety_cell = if f.empty_folder_protection {
-            Cell::new("Locked").fg(Color::Green)
-        } else {
-            Cell::new("Off").fg(Color::DarkGrey)
+        let mode_cell = match (f.mode, f.empty_folder_protection) {
+            (SyncMode::ContinuousBackup, true) => Cell::new("Backup [Safe]").fg(Color::Cyan),
+            (SyncMode::ContinuousBackup, false) => Cell::new("Backup").fg(Color::DarkGrey),
+            (SyncMode::DropAndPurge, _) => Cell::new("Offload").fg(Color::Yellow),
         };
 
         let state_cell = if let Some(snap) = &daemon_snapshot {
@@ -340,8 +333,7 @@ pub async fn cmd_list(
                 Cell::new((idx + 1).to_string()),
                 Cell::new(&f.name).add_attribute(Attribute::Bold),
                 Cell::new(f.id.to_string()),
-                Cell::new(mode_str),
-                safety_cell,
+                mode_cell,
                 state_cell,
                 Cell::new(local_path_display),
                 Cell::new(&f.remote_target),
@@ -351,8 +343,7 @@ pub async fn cmd_list(
             table.add_row(vec![
                 Cell::new((idx + 1).to_string()),
                 Cell::new(&f.name).add_attribute(Attribute::Bold),
-                Cell::new(mode_str),
-                safety_cell,
+                mode_cell,
                 state_cell,
                 Cell::new(local_path_display),
                 Cell::new(&f.remote_target),
@@ -635,18 +626,12 @@ pub async fn cmd_show(
     table.add_row(vec![Cell::new("Local Path"), Cell::new(path_status)]);
     table.add_row(vec![Cell::new("Remote Target"), Cell::new(&f.remote_target)]);
 
-    let mode_desc = match f.mode {
-        SyncMode::ContinuousBackup => "Continuous 1-Way Backup (safe cloud trash archiving)",
-        SyncMode::DropAndPurge => "Safe Drop & Purge (TOCTOU verified offloading to free disk space)",
+    let mode_desc = match (f.mode, f.empty_folder_protection) {
+        (SyncMode::ContinuousBackup, true) => "Continuous 1-Way Backup [Safety Locked] (safe cloud trash archiving & mass-deletion lock)",
+        (SyncMode::ContinuousBackup, false) => "Continuous 1-Way Backup [Safety Off] (direct sync without empty folder lock)",
+        (SyncMode::DropAndPurge, _) => "Safe Drop & Purge (TOCTOU verified offloading to free disk space)",
     };
     table.add_row(vec![Cell::new("Sync Mode"), Cell::new(mode_desc)]);
-
-    let lock_desc = if f.empty_folder_protection {
-        "Enabled (prevents catastrophic deletion if folder is emptied)"
-    } else {
-        "Disabled"
-    };
-    table.add_row(vec![Cell::new("Safety Lock"), Cell::new(lock_desc)]);
 
     let excludes_desc = if f.exclude_patterns.is_empty() {
         "None (defaults applied internally)".to_string()
@@ -773,26 +758,20 @@ pub async fn cmd_edit(
             SyncMode::DropAndPurge => "offload",
         };
         let mode_input = prompt_line(
-            &format!("Sync mode (backup / offload) [{}]", current_mode),
+            &format!("Sync mode (backup [safe] / offload) [{}]", current_mode),
             Some(current_mode),
         )?;
         if mode_input.trim().eq_ignore_ascii_case("offload")
             || mode_input.trim().eq_ignore_ascii_case("drop_and_purge")
         {
             f.mode = SyncMode::DropAndPurge;
+            f.empty_folder_protection = false;
         } else if mode_input.trim().eq_ignore_ascii_case("backup")
             || mode_input.trim().eq_ignore_ascii_case("continuous_backup")
         {
             f.mode = SyncMode::ContinuousBackup;
+            f.empty_folder_protection = true;
         }
-
-        let current_safety = if f.empty_folder_protection { "y" } else { "n" };
-        let safety_input = prompt_line(
-            &format!("Empty Folder Safety Lock (y/n) [{}]", current_safety),
-            Some(current_safety),
-        )?;
-        f.empty_folder_protection = safety_input.trim().eq_ignore_ascii_case("y")
-            || safety_input.trim().eq_ignore_ascii_case("yes");
     } else {
         let f = &mut config.folders[folder_idx];
         if let Some(n) = new_name {
@@ -806,8 +785,14 @@ pub async fn cmd_edit(
         }
         if let Some(m) = new_mode_str {
             match m.as_str() {
-                "offload" | "drop_and_purge" => f.mode = SyncMode::DropAndPurge,
-                _ => f.mode = SyncMode::ContinuousBackup,
+                "offload" | "drop_and_purge" => {
+                    f.mode = SyncMode::DropAndPurge;
+                    f.empty_folder_protection = false;
+                }
+                _ => {
+                    f.mode = SyncMode::ContinuousBackup;
+                    f.empty_folder_protection = true;
+                }
             }
         }
         if let Some(s) = new_safety {
@@ -1034,15 +1019,34 @@ fn run_add_wizard(
             continue;
         }
 
-        if existing_config
-            .folders
-            .iter()
-            .any(|f| f.local_path == resolved)
-        {
-            println!(
-                "  \x1B[31mAnother folder is already watching '{}'.\x1B[0m",
-                resolved.display()
-            );
+        // Collision check against existing folders (exact and nested)
+        let norm_new = sync_common::config::normalize_local_path(&resolved);
+        let mut collision = None;
+        for f in &existing_config.folders {
+            let norm_ex = sync_common::config::normalize_local_path(&f.local_path);
+            if norm_new == norm_ex {
+                collision = Some(format!(
+                    "Local directory '{}' is already watched by folder '{}'. You cannot sync the same folder twice.",
+                    resolved.display(), f.name
+                ));
+                break;
+            } else if norm_new.starts_with(&norm_ex) {
+                collision = Some(format!(
+                    "Local directory '{}' is inside existing watched folder '{}' ('{}'). Nested sync folders are not allowed.",
+                    resolved.display(), f.name, f.local_path.display()
+                ));
+                break;
+            } else if norm_ex.starts_with(&norm_new) {
+                collision = Some(format!(
+                    "Local directory '{}' contains existing watched folder '{}' ('{}'). You cannot watch a parent folder of an active sync folder.",
+                    resolved.display(), f.name, f.local_path.display()
+                ));
+                break;
+            }
+        }
+
+        if let Some(msg) = collision {
+            println!("  \x1B[31m{}\x1B[0m", msg);
             continue;
         }
 
@@ -1055,7 +1059,7 @@ fn run_add_wizard(
         let prompt_text = if let Some(d) = default_target {
             format!("3. Remote cloud destination URI [{}]", d)
         } else {
-            "3. Remote cloud destination URI\n   (e.g. 'rclone://gdrive/Documents', 's3://my-bucket/documents', 'gs://bucket/renders', 'file:///mnt/drive/backup')".to_string()
+            "3. Remote cloud destination URI\n   (e.g. 'gdrive://Documents', 's3://my-bucket/documents', 'gs://bucket/renders', 'file:///mnt/drive/backup')".to_string()
         };
         let input = prompt_line(&prompt_text, default_target)?;
         let trimmed = input.trim();
@@ -1064,7 +1068,7 @@ fn run_add_wizard(
             continue;
         }
         if !trimmed.contains("://") {
-            println!("  \x1B[31mRemote target must include a scheme (e.g. rclone://, s3://, gs://, file://, az://).\x1B[0m");
+            println!("  \x1B[31mRemote target must include a scheme (e.g. gdrive://, s3://, gs://, file://, az://).\x1B[0m");
             continue;
         }
 
@@ -1091,8 +1095,9 @@ fn run_add_wizard(
 
     // 4. Mode
     println!("\n4. Select Synchronization Mode:");
-    println!("   \x1B[1m[1] Continuous 1-Way Backup\x1B[0m");
-    println!("       Permanent copy on disk. Remote deletions safely archive to .Trash-syncd/.");
+    println!("   \x1B[1m[1] Continuous 1-Way Backup [Safety Locked] (Recommended)\x1B[0m");
+    println!("       Permanent copy on disk: edits sync to cloud, Empty Folder Safety Lock prevents");
+    println!("       accidental mass deletion, remote deletions safely archive to .Trash-syncd/.");
     println!("   \x1B[1m[2] Safe Offload (Drop & Purge)\x1B[0m");
     println!("       Frees local space: uploads to cloud, verifies SHA-256 + size, then removes local file.");
 
@@ -1141,23 +1146,12 @@ fn run_add_wizard(
             .collect()
     };
 
-    // 6. Safety Lock
-    let default_safety = match pre_safety {
-        Some(s) => s,
-        None => mode == SyncMode::ContinuousBackup,
-    };
-    let safety_lock = if mode == SyncMode::ContinuousBackup {
-        prompt_bool(
-            "\n6. Enable Empty Folder Safety Lock? (Stops sync if local folder is empty)",
-            default_safety,
-        )?
-    } else {
-        false
-    };
+    // Safety Lock is automatically tied to mode
+    let safety_lock = pre_safety.unwrap_or(mode == SyncMode::ContinuousBackup);
 
-    // 7. Advanced options
+    // 6. Advanced options
     let configure_advanced = prompt_bool(
-        "\n7. Configure advanced S3 options (endpoint, region, allow-http)?",
+        "\n6. Configure advanced S3 options (endpoint, region, allow-http)?",
         false,
     )?;
 
@@ -1181,14 +1175,11 @@ fn run_add_wizard(
     println!("  Target:       {}", remote_target);
     println!(
         "  Mode:         {}",
-        match mode {
-            SyncMode::ContinuousBackup => "Continuous 1-Way Backup",
-            SyncMode::DropAndPurge => "Safe Drop & Purge (Offload)",
+        match (mode, safety_lock) {
+            (SyncMode::ContinuousBackup, true) => "Continuous 1-Way Backup [Safety Locked]",
+            (SyncMode::ContinuousBackup, false) => "Continuous 1-Way Backup [Safety Off]",
+            (SyncMode::DropAndPurge, _) => "Safe Drop & Purge (Offload)",
         }
-    );
-    println!(
-        "  Safety Lock:  {}",
-        if safety_lock { "Enabled" } else { "Disabled" }
     );
     println!("  Excludes:     {}", exclude_patterns.join(", "));
     if let Some(ep) = &endpoint {
@@ -1327,24 +1318,27 @@ pub async fn fetch_status_quiet(
     }
 }
 
-pub async fn reload_daemon_and_report(socket_override: Option<PathBuf>) {
+pub async fn reload_daemon_and_report(socket_override: Option<PathBuf>) -> bool {
     let socket_path = socket_override.unwrap_or_else(default_socket_path);
     match UnixStream::connect(&socket_path).await {
         Ok(stream) => {
             let (mut reader, mut writer) = client_framed_split(stream);
             if let Err(e) = writer.send(IpcRequest::ReloadConfig).await {
                 eprintln!("\x1B[33m⚠ Failed sending reload command to syncd: {}\x1B[0m", e);
-                return;
+                return false;
             }
             match reader.next().await {
                 Some(Ok(IpcResponse::Ok { message })) => {
                     println!("\x1B[32m✓ syncd daemon: {}\x1B[0m", message);
+                    true
                 }
                 Some(Ok(IpcResponse::Error { message, .. })) => {
                     eprintln!("\x1B[31m✗ syncd daemon reload error: {}\x1B[0m", message);
+                    false
                 }
                 _ => {
                     println!("\x1B[32m✓ syncd daemon notified.\x1B[0m");
+                    true
                 }
             }
         }
@@ -1352,6 +1346,7 @@ pub async fn reload_daemon_and_report(socket_override: Option<PathBuf>) {
             println!(
                 "\x1B[90mℹ syncd daemon is not currently running. Changes will take effect when it starts.\x1B[0m"
             );
+            false
         }
     }
 }

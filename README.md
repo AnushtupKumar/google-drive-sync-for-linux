@@ -146,25 +146,46 @@ cloud-sync-platform/
 
 ## Installation & Setup
 
-### Option A: Automated One-Line Installer (Recommended)
+### Option A: Standalone Single-File Installer (Zero Dependencies — Any Linux PC)
 
-Run the included `install.sh` script:
+You can copy the single `syncd-installer.sh` file to **any Linux PC (x86_64)** and install immediately. **No Rust, Cargo, or compiler required!**
+
+```bash
+# Run the self-extracting standalone installer
+bash syncd-installer.sh
+
+# Or non-interactive / automated:
+bash syncd-installer.sh --yes
+```
+
+The standalone installer:
+1. Verifies Linux architecture (x86_64).
+2. Unpacks pre-compiled binaries into `~/.local/bin/` (`syncd` and `syncctl`).
+3. Sets up `~/.config/syncd/config.toml` template.
+4. Installs and starts the `systemd --user` background daemon (`syncd.service`).
+5. Prompts to immediately launch the first-time setup wizard (`syncctl setup`).
+
+---
+
+### Option B: Automated Project Installer (`install.sh`)
+
+If you have cloned or unzipped the repository:
 
 ```bash
 ./install.sh
 ```
 
-The script will automatically:
-1. Verify the Rust toolchain (`cargo`).
-2. Compile optimized release binaries (`syncd` and `syncctl`).
-3. Install binaries into `~/.local/bin/` with atomic overwrite permissions.
-4. Create a default configuration at `~/.config/syncd/config.toml` (if not already present).
-5. Install and enable the `syncd.service` under `systemd --user`.
-6. Start the daemon and verify operational health.
+- **Instant install**: If pre-compiled binaries exist in `bin/` or `target/release/`, it installs them immediately without compiling.
+- **Source compilation**: If binaries are not present, or if `--build` is specified, it compiles with `cargo build --release`.
+- **Options**:
+  - `./install.sh --yes` (non-interactive)
+  - `./install.sh --build` (force rebuild from source)
+  - `./install.sh --prefix /custom/bin`
+  - `./install.sh --uninstall`
 
 ---
 
-### Option B: Manual Installation
+### Option C: Manual Installation from Source
 
 #### 1. Compile Release Binaries
 ```bash
@@ -275,16 +296,20 @@ mode = "drop_and_purge"
 empty_folder_protection = false
 ```
 
-### 4. Rclone Direct Remotes (Google Drive, Dropbox, OneDrive, etc.)
+### 4. Native Google Drive (Pure Rust, Zero rclone dependency)
 
-Direct sync with any cloud provider configured in `rclone` (Google Drive, Dropbox, OneDrive, Box, pCloud, WebDAV, Nextcloud) **without** running `rclone mount` or FUSE daemons. Uploads stream directly over the network with true real-time byte progress:
+Direct native synchronization with personal or workspace Google Drive via Google's Drive v3 REST API. Fully in-process and written in 100% pure Rust (`reqwest` + `tokio`): **no `rclone` binary or FUSE mounts required**:
+
+* **Automatic OAuth2 Token Refresh**: Refreshes Google tokens automatically in-process.
+* **Resumable Upload Streaming**: Streams chunks directly from disk with bandwidth limiting and live byte counters.
+* **Credential Auto-Discovery**: Automatically reads credentials from `~/.config/syncd/gdrive_credentials.json`, environment variables, or existing `~/.config/rclone/rclone.conf`.
 
 ```toml
 [[folders]]
 id = "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d"
 name = "documents"
 local_path = "/home/anushtup/Documents"
-remote_target = "rclone://gdrive/Documents"
+remote_target = "gdrive://Documents"
 mode = "continuous_backup"
 empty_folder_protection = true
 
@@ -292,25 +317,33 @@ empty_folder_protection = true
 id = "f6e5d4c3-b2a1-0f9e-8d7c-6b5a4f3e2d1c"
 name = "renders-dropzone"
 local_path = "/home/anushtup/Renders"
-remote_target = "rclone://gdrive/renders"
+remote_target = "gdrive://renders"
 mode = "drop_and_purge"
 empty_folder_protection = false
 ```
 
-> [!NOTE]
-> **Why `rclone://` instead of `file://<mount>`?**
-> When mounting via `rclone mount --vfs-cache-mode writes`, local file operations write to a local SSD cache (`~/.cache/rclone/vfs/...`) and return immediately before uploading over the internet, causing an instant 100% "blink" in progress counters and potentially premature deletion in Drop & Purge mode. Using `rclone://<remote>/<folder>` uploads directly over the network with real-time speed/progress and true remote persistence verification.
+### 5. Optional Rclone Remotes
+
+For providers other than Google Drive (e.g. OneDrive, Dropbox, Box, pCloud, WebDAV), `syncd` can also sync directly via `rclone://<remote>/<folder>` without running `rclone mount`:
+
+```toml
+[[folders]]
+name = "onedrive-backup"
+local_path = "/home/anushtup/Documents"
+remote_target = "rclone://onedrive/Documents"
+mode = "continuous_backup"
+```
 
 ---
 
 ## Sync Modes vs. Safety Lock Explained
 
-| Feature | `Mode: [BACKUP]` (`continuous_backup`) | `Mode: [OFFLOAD]` (`drop_and_purge`) |
+| Feature | `Mode: Backup [Safe]` (`continuous_backup`) | `Mode: Offload` (`drop_and_purge`) |
 | :--- | :--- | :--- |
 | **Purpose** | Continuous 1-to-1 mirror copy. | Free local disk space (renders, raw archives). |
 | **Local File Lifecycle** | Local file is **kept** on disk permanently. | Local file is **unlinked** once verified in cloud. |
 | **Local Deletions** | Archives remote copy to `.Trash-syncd/`. | Preserves cloud archive (does not delete cloud file). |
-| **Safety Lock (`Safety`)** | **`LOCK ON`**: Blocks mass deletion if folder empties. | **`OFF`**: Disabled (emptying local folder is normal). |
+| **Safety Integration** | **Armed**: Empty Folder Safety Lock prevents mass deletion if drive unmounts. | **Purge Mode**: Disabled (emptying local folder is normal offloading). |
 
 ---
 
@@ -332,7 +365,58 @@ The supervisor diffs your active folder configuration live, adds newly defined w
 
 ## CLI & UI Control Reference (`syncctl`)
 
-### 1. Interactive Terminal UI (`syncctl ui` or bare `syncctl`)
+### 1. Interactive First-Time Setup Wizard (`syncctl setup` or `syncctl init`)
+Guides first-time users step-by-step through setting up `syncd` from a blank slate:
+```bash
+# Run first-time setup wizard:
+syncctl setup
+```
+**Wizard Steps:**
+1. **Cloud Provider Selection & Auth**: Select Google Drive, AWS S3 / Cloudflare R2, Google Cloud Storage, or Local/NAS disk. For Google Drive, initiates instant browser OAuth2 login or manual code authorization.
+2. **First Watched Folder**: Configures folder name, local path (with automatic `~/` expansion, directory auto-creation, and strict duplicate/nested folder collision checks), and remote cloud destination URI.
+3. **Sync Mode Selection**: Choose between `ContinuousBackup` (`Backup [Safe]`, keeps files locally, mirrors edits, arms Empty Folder Safety Lock, and archives deletions to `.Trash-syncd/`) or `DropAndPurge` (`Offload`, 5-stage TOCTOU offload for renders/archives).
+4. **Safety & Validation**: Runs strict configuration validation ensuring no duplicate paths, name clashes, or remote target overlaps.
+5. **Daemon Activation**: Connects to the running daemon to reload configuration live, or prompts to enable and start the `systemd --user` background service.
+
+---
+
+### 2. Cloud Storage Authentication (`syncctl auth` or `syncctl login`)
+Inspect and manage authentication credentials for all supported cloud providers:
+
+#### Authenticate with Google Drive (OAuth2)
+```bash
+# Default: Spawns automated local browser loopback server on port 53682
+syncctl auth login
+
+# Headless / SSH server: manual authorization code paste
+syncctl auth login --manual
+
+# Custom Google Cloud OAuth client credentials
+syncctl auth login --client-id "<YOUR_CLIENT_ID>" --client-secret "<YOUR_CLIENT_SECRET>"
+```
+
+#### Check Provider Authentication Status
+```bash
+syncctl auth status
+# or: syncctl auth
+```
+Displays a real-time status table validating Google Drive OAuth2 token refresh health, AWS/R2 environment credentials, and GCS Service Account configurations.
+
+#### Import from rclone
+If you previously configured Google Drive in `rclone`, import it directly without re-authenticating:
+```bash
+syncctl auth import-rclone          # Imports [gdrive] from ~/.config/rclone/rclone.conf
+syncctl auth import-rclone myremote # Imports custom remote
+```
+
+#### Log Out / Revoke Credentials
+```bash
+syncctl auth logout
+```
+
+---
+
+### 3. Interactive Terminal UI (`syncctl ui` or bare `syncctl`)
 Launches the full interactive, keyboard-driven terminal dashboard with live status cards, active folder selector, in-flight progress bars, and modal controls:
 ```bash
 # Launch interactive TUI directly:
@@ -351,7 +435,7 @@ syncctl
 * `?`: Show keyboard reference help overlay.
 * `q` / `Ctrl+C`: Exit cleanly and restore terminal screen buffer.
 
-### 2. Embedded Web Dashboard (`syncctl web`)
+### 4. Embedded Web Dashboard (`syncctl web`)
 Serves a clean, responsive, dark-mode browser dashboard on `http://127.0.0.1:8384` with zero external dependencies:
 ```bash
 # Launch on default port (http://127.0.0.1:8384):
@@ -362,7 +446,7 @@ syncctl web --bind 0.0.0.0 --port 9090
 ```
 Open `http://127.0.0.1:8384` in any browser to inspect metrics, active transfer progress bars, and trigger actions (Pause, Resume, Bandwidth Limit, Re-Scan) with one click.
 
-### 3. Folder Management CLI & Console (`syncctl folder`)
+### 5. Folder Management CLI & Console (`syncctl folder`)
 
 Manage watched folders directly from the terminal without editing configuration files manually. Includes interactive wizards, configuration validation, collision protection, and automatic daemon reloads.
 
@@ -440,7 +524,7 @@ syncctl reload
 
 ---
 
-### 4. Non-Interactive CLI Commands
+### 6. Non-Interactive CLI Commands
 
 #### Status Overview
 Inspect folder states, device status, pending queues, and active transfers:

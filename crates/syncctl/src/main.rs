@@ -19,7 +19,9 @@ use sync_common::{
 use tokio::net::UnixStream;
 use uuid::Uuid;
 
+pub mod auth;
 pub mod folder;
+pub mod setup;
 pub mod tui;
 pub mod web;
 
@@ -51,6 +53,14 @@ enum Commands {
     /// Interactive Terminal User Interface (keyboard-driven real-time dashboard)
     #[command(alias = "tui")]
     Ui,
+
+    /// First-time setup wizard for authentication and folder initialization
+    #[command(alias = "init")]
+    Setup,
+
+    /// Cloud storage authentication and credentials management
+    #[command(alias = "login")]
+    Auth(auth::AuthArgs),
 
     /// Launch embedded Web dashboard server (accessible via browser)
     Web {
@@ -153,6 +163,8 @@ async fn main() -> Result<()> {
 
     match cli.command.unwrap_or(Commands::Ui) {
         Commands::Ui => tui::run_tui(socket).await?,
+        Commands::Setup => setup::run_setup_wizard(cli.config, cli.socket).await?,
+        Commands::Auth(args) => auth::handle_auth_command(args).await?,
         Commands::Web { bind, port } => {
             let addr: std::net::SocketAddr = format!("{}:{}", bind, port)
                 .parse()
@@ -343,10 +355,11 @@ fn render_status(snapshot: &TelemetrySnapshot) {
             FolderState::Reconciling => Cell::new("Reconciling").fg(Color::Magenta),
         };
 
-        let mode_label = match f.sync_mode.as_str() {
-            "continuous_backup" => "Backup",
-            "drop_and_purge" => "Offload",
-            other => other,
+        let mode_label = match (f.sync_mode.as_str(), f.safety_lock_armed) {
+            ("continuous_backup", true) => "Backup [Safe]",
+            ("continuous_backup", false) => "Backup",
+            ("drop_and_purge", _) => "Offload",
+            (other, _) => other,
         };
 
         f_table.add_row(vec![

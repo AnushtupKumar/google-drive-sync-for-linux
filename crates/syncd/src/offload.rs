@@ -359,7 +359,7 @@ pub async fn run_drop_and_purge(ctx: &TaskContext) -> Result<(), OffloadError> {
 /// Execute one transfer task, routing to the correct pipeline based on
 /// `FolderConfig::mode` and `TaskContext::op`.
 pub async fn execute_task(ctx: &TaskContext) -> Result<(), OffloadError> {
-    match (ctx.folder_cfg.mode.clone(), ctx.op) {
+    match (ctx.folder_cfg.mode, ctx.op) {
         (SyncMode::DropAndPurge, OpType::Upload) => run_drop_and_purge(ctx).await,
 
         (SyncMode::ContinuousBackup, OpType::Upload) => run_backup_upload(ctx).await,

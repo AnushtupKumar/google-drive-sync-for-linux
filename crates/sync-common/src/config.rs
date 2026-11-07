@@ -13,7 +13,7 @@ use uuid::Uuid;
 // ─────────────────────────────────────────────
 
 /// Determines what `syncd` does after a successful upload.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncMode {
     /// Continuous 1-way backup.  Remote deletions go to `.syncd_trash/` first.
@@ -164,6 +164,80 @@ impl GlobalConfig {
         Ok(config)
     }
 
+    /// Check if a proposed folder (name, local_path, remote_target) collides with
+    /// any existing folder in this configuration (optionally excluding a folder ID for edits).
+    pub fn check_collision(
+        &self,
+        name: &str,
+        local_path: &std::path::Path,
+        remote_target: &str,
+        exclude_id: Option<Uuid>,
+    ) -> Result<(), String> {
+        let name_lower = name.trim().to_lowercase();
+        let norm_local = normalize_local_path(local_path);
+        let norm_target = remote_target.trim().trim_end_matches('/');
+
+        for f in &self.folders {
+            if Some(f.id) == exclude_id {
+                continue;
+            }
+
+            if f.name.trim().to_lowercase() == name_lower {
+                return Err(format!("A folder named '{}' already exists.", f.name));
+            }
+
+            let ex_local = normalize_local_path(&f.local_path);
+            if norm_local == ex_local {
+                return Err(format!(
+                    "Local directory '{}' is already watched by folder '{}'.",
+                    local_path.display(),
+                    f.name
+                ));
+            }
+            if norm_local.starts_with(&ex_local) {
+                return Err(format!(
+                    "Local directory '{}' is inside folder '{}' ('{}'), which is already recursively watched.",
+                    local_path.display(),
+                    f.name,
+                    f.local_path.display()
+                ));
+            }
+            if ex_local.starts_with(&norm_local) {
+                return Err(format!(
+                    "Local directory '{}' contains folder '{}' ('{}'), which is already watched.",
+                    local_path.display(),
+                    f.name,
+                    f.local_path.display()
+                ));
+            }
+
+            let ex_target = f.remote_target.trim().trim_end_matches('/');
+            if norm_target == ex_target {
+                return Err(format!(
+                    "Remote target '{}' collides with existing folder '{}' ({}).",
+                    remote_target, f.name, f.remote_target
+                ));
+            }
+            if norm_target.starts_with(ex_target)
+                && norm_target.as_bytes().get(ex_target.len()) == Some(&b'/')
+            {
+                return Err(format!(
+                    "Remote target '{}' overlaps with existing folder '{}' ({}).",
+                    remote_target, f.name, f.remote_target
+                ));
+            }
+            if ex_target.starts_with(norm_target)
+                && ex_target.as_bytes().get(norm_target.len()) == Some(&b'/')
+            {
+                return Err(format!(
+                    "Remote target '{}' contains existing folder '{}' target ({}).",
+                    remote_target, f.name, f.remote_target
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Validates the configuration, returning Ok(()) if no fatal errors were found.
     pub fn validate(&self) -> Result<(), ConfigError> {
         let results = validate_config(self);
@@ -299,11 +373,41 @@ pub enum ConfigError {
         other_name: String,
     },
 
+    #[error(
+        "folder '{name}' (id={id}): local_path '{path}' is inside folder \
+         '{other_name}' local_path '{other_path}'",
+        path = path.display(),
+        other_path = other_path.display()
+    )]
+    LocalPathPrefixOverlap {
+        id: Uuid,
+        name: String,
+        path: PathBuf,
+        other_name: String,
+        other_path: PathBuf,
+    },
+
     #[error("no folders configured")]
     NoFolders,
 
     #[error("folder '{name}' (id={id}): local_path is not absolute")]
     RelativeLocalPath { id: Uuid, name: String },
+}
+
+/// Normalize a filesystem path by cleaning components, removing '.' and empty segments,
+/// and collapsing '..'.
+pub fn normalize_local_path(path: &std::path::Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            c => normalized.push(c.as_os_str()),
+        }
+    }
+    normalized
 }
 
 /// A single validation result: either a hard error or a non-fatal warning.
@@ -350,18 +454,6 @@ pub fn validate_config(cfg: &GlobalConfig) -> Vec<ValidationResult> {
         }
     }
 
-    // Detect duplicate local paths
-    let mut seen_paths: std::collections::HashMap<PathBuf, &str> = Default::default();
-    for f in &cfg.folders {
-        if let Some(prev_name) = seen_paths.insert(f.local_path.clone(), &f.name) {
-            results.push(ValidationResult::Error(ConfigError::DuplicateLocalPath {
-                path: f.local_path.clone(),
-                name: f.name.clone(),
-                other_name: prev_name.to_string(),
-            }));
-        }
-    }
-
     // Validate local_path is absolute
     for f in &cfg.folders {
         if !f.local_path.is_absolute() {
@@ -372,11 +464,45 @@ pub fn validate_config(cfg: &GlobalConfig) -> Vec<ValidationResult> {
         }
     }
 
+    // Detect duplicate and nested/overlapping local paths
+    let folders: Vec<_> = cfg.folders.iter().collect();
+    for i in 0..folders.len() {
+        let a = folders[i];
+        let a_norm = normalize_local_path(&a.local_path);
+
+        for b in &folders[(i + 1)..] {
+            let b_norm = normalize_local_path(&b.local_path);
+
+            if a_norm == b_norm {
+                results.push(ValidationResult::Error(ConfigError::DuplicateLocalPath {
+                    path: a.local_path.clone(),
+                    name: a.name.clone(),
+                    other_name: b.name.clone(),
+                }));
+            } else if a_norm.starts_with(&b_norm) {
+                results.push(ValidationResult::Error(ConfigError::LocalPathPrefixOverlap {
+                    id: a.id,
+                    name: a.name.clone(),
+                    path: a.local_path.clone(),
+                    other_name: b.name.clone(),
+                    other_path: b.local_path.clone(),
+                }));
+            } else if b_norm.starts_with(&a_norm) {
+                results.push(ValidationResult::Error(ConfigError::LocalPathPrefixOverlap {
+                    id: b.id,
+                    name: b.name.clone(),
+                    path: b.local_path.clone(),
+                    other_name: a.name.clone(),
+                    other_path: a.local_path.clone(),
+                }));
+            }
+        }
+    }
+
     // Detect remote_target exact matches and prefix overlaps.
     // We normalise by stripping trailing '/' for comparison.
     let normalise = |s: &str| s.trim_end_matches('/').to_owned();
 
-    let folders: Vec<_> = cfg.folders.iter().collect();
     for i in 0..folders.len() {
         let a = folders[i];
         let a_target = normalise(&a.remote_target);
@@ -487,6 +613,7 @@ unsafe fn libc_getuid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn test_global_config_roundtrip() {
@@ -598,5 +725,55 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert!(matches!(results[0], ValidationResult::Warning(_)));
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_detects_nested_local_paths() {
+        let mut config = GlobalConfig::default();
+        config.folders.push(FolderConfig {
+            id: Uuid::new_v4(),
+            name: "Parent".to_string(),
+            local_path: PathBuf::from("/home/user/Documents"),
+            remote_target: "s3://b/1".to_string(),
+            ..Default::default()
+        });
+        config.folders.push(FolderConfig {
+            id: Uuid::new_v4(),
+            name: "Child".to_string(),
+            local_path: PathBuf::from("/home/user/Documents/subfolder"),
+            remote_target: "s3://b/2".to_string(),
+            ..Default::default()
+        });
+
+        let results = validate_config(&config);
+        let has_overlap = results.iter().any(|r| matches!(r, ValidationResult::Error(ConfigError::LocalPathPrefixOverlap { .. })));
+        assert!(has_overlap, "expected LocalPathPrefixOverlap error");
+    }
+
+    #[test]
+    fn test_check_collision_method() {
+        let mut config = GlobalConfig::default();
+        config.folders.push(FolderConfig {
+            id: Uuid::new_v4(),
+            name: "Docs".to_string(),
+            local_path: PathBuf::from("/home/user/Documents"),
+            remote_target: "gdrive://Documents".to_string(),
+            ..Default::default()
+        });
+
+        // Duplicate name
+        assert!(config.check_collision("docs", Path::new("/home/user/Other"), "gdrive://Other", None).is_err());
+        // Duplicate path
+        assert!(config.check_collision("Unique", Path::new("/home/user/Documents"), "gdrive://Other", None).is_err());
+        // Duplicate path with trailing slash
+        assert!(config.check_collision("Unique", Path::new("/home/user/Documents/"), "gdrive://Other", None).is_err());
+        // Nested path
+        assert!(config.check_collision("Unique", Path::new("/home/user/Documents/work"), "gdrive://Other", None).is_err());
+        // Parent path
+        assert!(config.check_collision("Unique", Path::new("/home/user"), "gdrive://Other", None).is_err());
+        // Duplicate remote target
+        assert!(config.check_collision("Unique", Path::new("/home/user/Other"), "gdrive://Documents", None).is_err());
+        // Non-colliding path & target
+        assert!(config.check_collision("Unique", Path::new("/home/user/Other"), "gdrive://Other", None).is_ok());
     }
 }

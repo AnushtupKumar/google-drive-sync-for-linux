@@ -3033,6 +3033,7 @@ dependencies = [
  "futures",
  "indicatif",
  "libc",
+ "reqwest",
  "serde",
  "serde_json",
  "sync-common",

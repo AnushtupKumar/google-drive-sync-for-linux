@@ -644,8 +644,11 @@
           else if (stateLower === 'error') stateClass = 'status-error';
 
           let modeName = '—';
-          if (f.sync_mode === 'continuous_backup') modeName = 'Backup';
-          else if (f.sync_mode === 'drop_and_purge') modeName = 'Offload';
+          if (f.sync_mode === 'continuous_backup') {
+            modeName = f.safety_lock_armed ? 'Backup [Safe]' : 'Backup';
+          } else if (f.sync_mode === 'drop_and_purge') {
+            modeName = 'Offload';
+          }
 
           return `
             <tr>
