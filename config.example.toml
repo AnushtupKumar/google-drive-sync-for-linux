@@ -46,7 +46,7 @@ debounce_max_wait_ms = 60000
 [[folders]]
 id = "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d"
 name = "documents"
-local_path = "/home/anushtup/Documents"
+local_path = "~/Documents"
 remote_target = "gdrive://Documents"
 mode = "continuous_backup"
 exclude_patterns = [
@@ -63,7 +63,7 @@ empty_folder_protection = true
 [[folders]]
 id = "f6e5d4c3-b2a1-0f9e-8d7c-6b5a4f3e2d1c"
 name = "renders-dropzone"
-local_path = "/home/anushtup/Renders"
+local_path = "~/Renders"
 remote_target = "s3://my-company-archive/renders"
 mode = "drop_and_purge"
 exclude_patterns = [

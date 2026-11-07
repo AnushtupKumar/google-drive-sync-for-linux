@@ -1,8 +1,31 @@
 # Linux Cloud Sync & File Offload Platform (`syncd` & `syncctl`)
 
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-1.80%2B-orange.svg?logo=rust)](https://www.rust-lang.org)
+[![Platform](https://img.shields.io/badge/Platform-Linux%20x86__64-brightgreen.svg?logo=linux)](https://kernel.org)
+[![systemd](https://img.shields.io/badge/systemd-user%20service-informational.svg)](https://systemd.io)
+
 A production-grade, crash-safe, real-time cloud synchronization and file-offloading platform for Linux written in Rust.
 
-`syncd` runs as a resilient background user daemon under `systemd --user` managing recursive `inotify` watches, SQLite WAL queue persistence, and strict Time-of-Check to Time-of-Use (TOCTOU) file offloading. `syncctl` is the accompanying command-line client communicating over a Unix Domain Socket with framed JSON streaming telemetry.
+`syncd` runs as a resilient background user daemon under `systemd --user` managing recursive `inotify` watches, SQLite WAL queue persistence, and strict Time-of-Check to Time-of-Use (TOCTOU) file offloading. `syncctl` is the accompanying command-line client communicating over a Unix Domain Socket with framed JSON streaming telemetry, featuring an interactive keyboard-driven Terminal UI, an embedded local Web dashboard, and an automated onboarding wizard.
+
+---
+
+## Key Features
+
+- **Native Google Drive Integration**: 100% pure Rust Drive v3 REST API implementation. No `rclone` daemon, FUSE mounts, or external binaries required.
+- **Multi-Cloud Storage**: First-class support for **AWS S3**, **Cloudflare R2**, **MinIO**, **Google Cloud Storage (GCS)**, **Azure Blob Storage**, **Local/NAS/USB drives** (`file://`), and optional **rclone remotes** (`rclone://`).
+- **Zero-Dependency Standalone Installer**: Single 13 MB self-extracting file (`syncd-installer.sh`) that installs on any x86_64 Linux PC in seconds without Rust, Cargo, or compiler toolchains.
+- **5-Stage TOCTOU Safe Offloading**: Safely drop & purge local files (renders, videos, raw footage) only *after* verified chunked upload and SHA-256 integrity confirmation.
+- **Hardware-Level Mount Safety**: Three-layer canary system (`.syncd-anchor`, filesystem `st_dev` ID, and kernel `/proc/self/mountinfo` epoll) prevents accidental cloud deletions when USB drives or network shares disconnect.
+- **Empty Folder Safety Lock**: Circuit-breaker halts sync operations if a previously populated folder suddenly reports zero files.
+- **Interactive First-Time Setup Wizard**: `syncctl setup` guides users through cloud authentication, folder configuration, collision prevention, and service startup.
+- **Multiple Control Interfaces**:
+  - **TUI Dashboard** (`syncctl`): Interactive keyboard-driven terminal dashboard with live progress meters, folder inspector, and modal controls.
+  - **Embedded Web UI** (`syncctl web`): Responsive dark-mode browser dashboard served locally on port 8384.
+  - **Live Terminal Monitor** (`syncctl watch`): Real-time streaming progress bars, transfer rates, and ETAs.
+  - **Rich CLI** (`syncctl folder`, `syncctl status`, `syncctl bwlimit`, `syncctl pause`): Full programmatic automation support.
+- **Dynamic Bandwidth Throttling**: Live rate-limiting adjustable mid-stream without restarting transfers.
 
 ---
 
@@ -26,19 +49,19 @@ flowchart TD
         Pipeline -->|DropAndPurge| OffloadFlow["5-Stage TOCTOU Drop & Purge"]
         
         Workers -->|Throttled Stream| Limiter["storage/mod.rs\n(Token-Bucket Bandwidth Limiter)"]
-        Limiter --> Cloud[("Cloud Object Storage\n(S3 / GCS / Azure / HTTP)")]
+        Limiter --> Cloud[("Cloud Object Storage\n(Google Drive / S3 / R2 / GCS / Azure)")]
         
         Supervisor -->|Telemetry Stream| IPCServer["ipc_server.rs\n(tokio UnixListener mode 0600)"]
     end
 
-    subgraph Client ["CLI Client"]
-        Syncctl["syncctl\n(Clap v4 + Comfy-Table + Indicatif)"] <-->|Length-Delimited JSON IPC| IPCServer
+    subgraph Client ["CLI & TUI Clients"]
+        Syncctl["syncctl\n(CLI / TUI / Web / Wizard)"] <-->|Length-Delimited JSON IPC| IPCServer
     end
 ```
 
 ---
 
-## Key Subsystems & Safety Guarantees
+## Subsystems & Safety Guarantees
 
 ### 1. 5-Stage TOCTOU-Safe Drop & Purge Pipeline (`offload.rs`)
 To prevent data loss when freeing local disk space, files in `DropAndPurge` mode pass through a strict 5-stage verification state machine:
@@ -54,7 +77,7 @@ Stage 2: Throttled Cloud Upload
     • Attach SHA-256 digest in object metadata
 
 Stage 3: Strict Remote Verification
-    • Execute HEAD request against the cloud storage backend
+    • Execute HEAD request / metadata check against the cloud backend
     • Assert remote_object.size == pre_stat.size_bytes
 
 Stage 4: TOCTOU Re-Stat Guard
@@ -70,7 +93,7 @@ Stage 5: Atomic Unlink & Bottom-Up Directory Pruning
 
 ### 2. Drive Disconnect & Canary Anchor (`safety.rs`)
 External USB/SATA drives unmounting mid-sync can falsely present an empty directory on the root partition. `syncd` guards against this with three layers of defense:
-* **Anchor Canary (`.syncd-anchor`)**: Writes a canary file with the folder UUID. If missing or mismatched, all operations halt.
+* **Anchor Canary (`.syncd-anchor`)**: Writes a canary file with the folder UUID. If missing or mismatched, all operations halt immediately.
 * **POSIX Device ID (`st_dev`)**: Records filesystem device ID on initial mount. If `st_dev` differs, the drive was unmounted or replaced.
 * **Kernel `/proc/self/mountinfo` Watcher**: Spawns a background task calling `poll(2)` with `POLLPRI | POLLERR` on `/proc/self/mountinfo`. Upon any mount table change, active folders are inspected immediately:
   * Cancels active transfer tokens.
@@ -86,7 +109,7 @@ In `ContinuousBackup` mode, before executing any remote deletion:
 
 ### 4. Sliding-Window Debouncer (`debouncer.rs`)
 Prevents syncing partial files while preventing starvation on continuously written files:
-* Coalesces incoming inotify events in an in-memory sliding window.
+* Coalesces incoming `inotify` events in an in-memory sliding window.
 * **Delete Priority**: Within a single window, a `Delete` event overrides an `Upload`.
 * **Flush Conditions**: Flushes to SQLite `transfer_queue` when:
   1. Activity has settled: `now - last_updated >= debounce_quiet_ms` (default 3s).
@@ -96,62 +119,18 @@ Prevents syncing partial files while preventing starvation on continuously writt
 * **Live Bandwidth Throttling**: Rate limiting is held in an `Arc<RwLock<Option<Arc<BandwidthLimiter>>>>`. Adjusting the rate via `syncctl bwlimit` swaps the limiter mid-stream without restarting transfers.
 * **Exponential Backoff with Full Jitter**:
   $$\text{delay} \sim U\left(0,\, \min(300\text{s},\, 1.0 \times 2^{\text{attempt}})\right)$$
-  Persisted in SQLite (`attempt_count`, `next_retry_ms`) so backoff persists across restarts.
+  Persisted in SQLite (`attempt_count`, `next_retry_ms`) so backoff survives service restarts.
 
 ---
 
-## Workspace Structure
+## Installation
 
-```text
-cloud-sync-platform/
-├── Cargo.toml
-├── config.example.toml
-├── systemd/
-│   └── syncd.service
-└── crates/
-    ├── sync-common/
-    │   ├── Cargo.toml
-    │   └── src/
-    │       ├── lib.rs
-    │       ├── config.rs        # TOML configuration & collision validation
-    │       ├── ipc.rs           # LengthDelimitedCodec + JSON IPC framing
-    │       └── state.rs         # FolderState, TransferProgress, Telemetry
-    ├── syncd/
-    │   ├── Cargo.toml
-    │   ├── migrations/
-    │   │   └── 0001_init.sql    # SQLite WAL schema
-    │   └── src/
-    │       ├── main.rs          # Daemon entrypoint, sd_notify, signals
-    │       ├── supervisor.rs    # Actor orchestrator, ticker, worker pool
-    │       ├── watcher.rs       # Recursive inotify + gitignore engine
-    │       ├── debouncer.rs     # Sliding-window coalescing debouncer
-    │       ├── safety.rs        # st_dev, .syncd-anchor, mountinfo epoll
-    │       ├── offload.rs       # 5-stage TOCTOU Drop & Purge pipeline
-    │       ├── storage/
-    │       │   ├── mod.rs       # CloudStorage trait, BandwidthLimiter
-    │       │   └── rclone.rs    # ObjectStoreBackend (S3/GCS/Azure/HTTP)
-    │       ├── db.rs            # SQLite WAL connection pool & transactions
-    │       ├── ipc_server.rs    # Unix domain socket listener (mode 0600)
-    │       └── logging.rs       # FileRotate gzip compression + D-Bus alerts
-    └── syncctl/
-        ├── Cargo.toml
-        └── src/
-            ├── main.rs          # Clap v4 CLI client + command dispatch
-            ├── tui.rs           # Interactive keyboard-driven Terminal UI
-            ├── web.rs           # Embedded local HTTP dashboard server
-            └── dashboard.html   # Zero-dependency responsive browser UI
-```
+### Option 1: Standalone Single-File Installer (No Dependencies — Any Linux PC)
 
----
-
-## Installation & Setup
-
-### Option A: Standalone Single-File Installer (Zero Dependencies — Any Linux PC)
-
-You can copy the single `syncd-installer.sh` file to **any Linux PC (x86_64)** and install immediately. **No Rust, Cargo, or compiler required!**
+You can copy the single `syncd-installer.sh` file to **any Linux PC (x86_64)**. **Zero dependencies needed — no Rust, Cargo, or compiler required!**
 
 ```bash
-# Run the self-extracting standalone installer
+# Run the self-extracting installer
 bash syncd-installer.sh
 
 # Or non-interactive / automated:
@@ -159,24 +138,26 @@ bash syncd-installer.sh --yes
 ```
 
 The standalone installer:
-1. Verifies Linux architecture (x86_64).
-2. Unpacks pre-compiled binaries into `~/.local/bin/` (`syncd` and `syncctl`).
-3. Sets up `~/.config/syncd/config.toml` template.
-4. Installs and starts the `systemd --user` background daemon (`syncd.service`).
+1. Verifies Linux architecture (`x86_64`).
+2. Extracts and installs `syncd` and `syncctl` into `~/.local/bin/`.
+3. Creates default `~/.config/syncd/config.toml` (if not already present).
+4. Configures, enables, and starts the background user service (`systemctl --user enable --now syncd`).
 5. Prompts to immediately launch the first-time setup wizard (`syncctl setup`).
 
 ---
 
-### Option B: Automated Project Installer (`install.sh`)
+### Option 2: Project Repository Installer (`install.sh`)
 
-If you have cloned or unzipped the repository:
+Clone the repository and run `install.sh`:
 
 ```bash
+git clone https://github.com/<your-username>/cloud-sync-platform.git
+cd cloud-sync-platform
 ./install.sh
 ```
 
-- **Instant install**: If pre-compiled binaries exist in `bin/` or `target/release/`, it installs them immediately without compiling.
-- **Source compilation**: If binaries are not present, or if `--build` is specified, it compiles with `cargo build --release`.
+- **Instant install**: If pre-compiled binaries are present in `bin/` or `target/release/`, it installs them immediately without compiling.
+- **Source compilation**: If binaries are not present, or if `--build` is passed, it compiles with `cargo build --release`.
 - **Options**:
   - `./install.sh --yes` (non-interactive)
   - `./install.sh --build` (force rebuild from source)
@@ -185,81 +166,92 @@ If you have cloned or unzipped the repository:
 
 ---
 
-### Option C: Manual Installation from Source
+### Option 3: Compile from Source with Cargo
 
-#### 1. Compile Release Binaries
 ```bash
+# 1. Clone repository
+git clone https://github.com/<your-username>/cloud-sync-platform.git
+cd cloud-sync-platform
+
+# 2. Build release profile
 cargo build --workspace --release
-```
 
-#### 2. Install Binaries to PATH
-```bash
+# 3. Install binaries
 mkdir -p ~/.local/bin
 install -m 755 target/release/syncd ~/.local/bin/syncd
 install -m 755 target/release/syncctl ~/.local/bin/syncctl
-```
-> [!TIP]
-> Ensure `~/.local/bin` is in your PATH. If not, add `export PATH="$HOME/.local/bin:$PATH"` to your `~/.bashrc` or `~/.zshrc`.
 
-#### 3. Set Up Configuration
-```bash
-mkdir -p ~/.config/syncd
-cp config.example.toml ~/.config/syncd/config.toml
-nano ~/.config/syncd/config.toml
-```
-
-#### 4. Enable and Start systemd User Service
-```bash
+# 4. Set up systemd user service
 mkdir -p ~/.config/systemd/user
-cp systemd/syncd.service ~/.config/systemd/user/
+install -m 644 systemd/syncd.service ~/.config/systemd/user/syncd.service
 systemctl --user daemon-reload
 systemctl --user enable --now syncd
 ```
 
-Verify service status:
+> [!TIP]
+> Ensure `~/.local/bin` is in your `PATH`. If not, add `export PATH="$HOME/.local/bin:$PATH"` to your `~/.bashrc` or `~/.zshrc`.
+
+---
+
+## 3-Minute Quickstart Guide
+
+After installation, configure your first sync folder with the interactive wizard:
+
 ```bash
-systemctl --user status syncd
-journalctl --user -u syncd -f
+syncctl setup
+```
+
+The wizard will guide you through:
+1. **Cloud Authentication**: Connect your Google Drive, AWS S3 / Cloudflare R2, GCS, or Local folder.
+2. **Watched Folder**: Choose the folder you want to sync (e.g. `~/Documents` or `~/Renders`).
+3. **Sync Mode**:
+   - `Backup [Safe]`: Keeps files on disk, mirrors edits, and archives deletions to cloud `.Trash-syncd/`.
+   - `Offload`: Uploads files, verifies SHA-256, and safely purges local copies to free disk space.
+4. **Daemon Activation**: Automatically reloads `syncd` to start watching and syncing immediately!
+
+---
+
+## Storage Provider Setup Guide
+
+`syncd` supports cloud object stores natively, standard POSIX filesystems, and external services:
+
+### 1. Native Google Drive (`gdrive://...`) — Pure Rust
+
+Direct native synchronization with personal or workspace Google Drive via Google's Drive v3 REST API. Fully in-process and written in 100% pure Rust: **no `rclone` daemon or FUSE mounts required**.
+
+#### Authentication:
+Run the authentication command:
+```bash
+syncctl auth login
+```
+- Opens your default web browser for OAuth2 consent.
+- Headless / SSH server? Use: `syncctl auth login --manual`
+- Have an existing rclone configuration? Import instantly with: `syncctl auth import-rclone`
+
+#### Configuration (`~/.config/syncd/config.toml`):
+```toml
+[[folders]]
+id = "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d"
+name = "documents"
+local_path = "~/Documents"
+remote_target = "gdrive://Documents"
+mode = "continuous_backup"
+empty_folder_protection = true
+
+[[folders]]
+id = "f6e5d4c3-b2a1-0f9e-8d7c-6b5a4f3e2d1c"
+name = "renders-dropzone"
+local_path = "~/Renders"
+remote_target = "gdrive://renders"
+mode = "drop_and_purge"
+empty_folder_protection = false
 ```
 
 ---
 
-## Storage Backend Configuration Guide
+### 2. Amazon S3, Cloudflare R2, MinIO, or Wasabi (`s3://...`)
 
-`syncd` supports cloud object stores via the `object_store` multi-backend as well as standard POSIX / FUSE filesystems (`file://`).
-
-### 1. Google Drive (via rclone)
-
-Because Google Drive uses document IDs rather than a standard blob hierarchy, the recommended Linux pattern is mounting Google Drive using `rclone`:
-
-1. **Configure rclone**:
-   ```bash
-   rclone config
-   # Name: gdrive
-   # Storage Type: drive (Google Drive)
-   # Follow web browser prompt to authenticate.
-   ```
-2. **Mount Google Drive locally**:
-   ```bash
-   mkdir -p ~/GoogleDrive
-   rclone mount gdrive: ~/GoogleDrive --vfs-cache-mode writes --daemon
-   ```
-3. **Configure folder in `~/.config/syncd/config.toml`**:
-   ```toml
-   [[folders]]
-   id = "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d"
-   name = "documents"
-   local_path = "/home/anushtup/Documents"
-   remote_target = "file:///home/anushtup/GoogleDrive/Documents"
-   mode = "continuous_backup"
-   empty_folder_protection = true
-   ```
-   > [!NOTE]
-   > When deleted locally in `ContinuousBackup` mode, `syncd` safely streams the file into `.Trash-syncd/` on your Google Drive before removing the active file.
-
-### 2. Amazon S3, MinIO, Cloudflare R2, or Wasabi
-
-Set your AWS credentials in your environment or credentials file:
+Set your credentials via standard environment variables or AWS credentials file:
 ```bash
 export AWS_ACCESS_KEY_ID="your-access-key"
 export AWS_SECRET_ACCESS_KEY="your-secret-key"
@@ -270,66 +262,63 @@ Configure `~/.config/syncd/config.toml`:
 [[folders]]
 id = "b2c3d4e5-f6a7-8b9c-0d1e-2f3a4b5c6d7e"
 name = "s3-backups"
-local_path = "/home/anushtup/Projects"
+local_path = "~/Projects"
 remote_target = "s3://my-backup-bucket/workstation/projects"
 mode = "continuous_backup"
 empty_folder_protection = true
 
-# Optional: MinIO / Cloudflare R2 custom endpoint
+# Optional: MinIO / Cloudflare R2 endpoint configuration
 # endpoint = "https://<account-id>.r2.cloudflarestorage.com"
 # region = "auto"
 # allow_http = false
 ```
 
-### 3. Google Cloud Storage (GCS)
+---
 
+### 3. Google Cloud Storage (`gs://...`)
+
+Set your Service Account credentials:
 ```bash
-export GOOGLE_APPLICATION_CREDENTIALS="/home/anushtup/.config/gcloud/service-account.json"
+export GOOGLE_APPLICATION_CREDENTIALS="~/.config/gcloud/service-account.json"
 ```
+
+Configure `~/.config/syncd/config.toml`:
 ```toml
 [[folders]]
 id = "c3d4e5f6-a7b8-9c0d-1e2f-3a4b5c6d7e8f"
 name = "gcs-archive"
-local_path = "/home/anushtup/Renders"
+local_path = "~/Renders"
 remote_target = "gs://my-company-archive/renders"
 mode = "drop_and_purge"
 empty_folder_protection = false
 ```
 
-### 4. Native Google Drive (Pure Rust, Zero rclone dependency)
+---
 
-Direct native synchronization with personal or workspace Google Drive via Google's Drive v3 REST API. Fully in-process and written in 100% pure Rust (`reqwest` + `tokio`): **no `rclone` binary or FUSE mounts required**:
+### 4. Local Filesystem, External USB Drive, or NAS (`file://...`)
 
-* **Automatic OAuth2 Token Refresh**: Refreshes Google tokens automatically in-process.
-* **Resumable Upload Streaming**: Streams chunks directly from disk with bandwidth limiting and live byte counters.
-* **Credential Auto-Discovery**: Automatically reads credentials from `~/.config/syncd/gdrive_credentials.json`, environment variables, or existing `~/.config/rclone/rclone.conf`.
+Sync directly to a local directory, mounted external drive, or NFS/SMB share:
 
 ```toml
 [[folders]]
-id = "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d"
-name = "documents"
-local_path = "/home/anushtup/Documents"
-remote_target = "gdrive://Documents"
+id = "d4e5f6a7-b8c9-0d1e-2f3a-4b5c6d7e8f9a"
+name = "local-nas-backup"
+local_path = "~/Documents"
+remote_target = "file:///mnt/backup_drive/syncd_backups"
 mode = "continuous_backup"
 empty_folder_protection = true
-
-[[folders]]
-id = "f6e5d4c3-b2a1-0f9e-8d7c-6b5a4f3e2d1c"
-name = "renders-dropzone"
-local_path = "/home/anushtup/Renders"
-remote_target = "gdrive://renders"
-mode = "drop_and_purge"
-empty_folder_protection = false
 ```
 
-### 5. Optional Rclone Remotes
+---
 
-For providers other than Google Drive (e.g. OneDrive, Dropbox, Box, pCloud, WebDAV), `syncd` can also sync directly via `rclone://<remote>/<folder>` without running `rclone mount`:
+### 5. Optional Rclone Remotes (`rclone://...`)
+
+For cloud providers not yet natively integrated (e.g. OneDrive, Dropbox, Box, pCloud, WebDAV), `syncd` can sync directly via `rclone://<remote>/<folder>` without running `rclone mount`:
 
 ```toml
 [[folders]]
 name = "onedrive-backup"
-local_path = "/home/anushtup/Documents"
+local_path = "~/Documents"
 remote_target = "rclone://onedrive/Documents"
 mode = "continuous_backup"
 ```
@@ -340,103 +329,43 @@ mode = "continuous_backup"
 
 | Feature | `Mode: Backup [Safe]` (`continuous_backup`) | `Mode: Offload` (`drop_and_purge`) |
 | :--- | :--- | :--- |
-| **Purpose** | Continuous 1-to-1 mirror copy. | Free local disk space (renders, raw archives). |
+| **Primary Goal** | Continuous 1-to-1 mirror copy. | Free local physical drive space (renders, raw archives). |
 | **Local File Lifecycle** | Local file is **kept** on disk permanently. | Local file is **unlinked** once verified in cloud. |
 | **Local Deletions** | Archives remote copy to `.Trash-syncd/`. | Preserves cloud archive (does not delete cloud file). |
-| **Safety Integration** | **Armed**: Empty Folder Safety Lock prevents mass deletion if drive unmounts. | **Purge Mode**: Disabled (emptying local folder is normal offloading). |
+| **Safety Integration** | **Armed**: Empty Folder Safety Lock prevents mass deletion if drive unmounts. | **Purge Mode**: Disabled (emptying local folder is expected). |
+| **Tracking Metric** | Active files on disk and in database catalog. | SQLite catalog of all files preserved in the cloud. |
 
 ---
 
-## Live Configuration Reloading
+## CLI & Control Tool Reference (`syncctl`)
 
-To apply changes made to `~/.config/syncd/config.toml` (adding/removing folders or changing bandwidth limits):
-
+### 1. Interactive First-Time Setup Wizard
 ```bash
-# Restart the user daemon:
-systemctl --user restart syncd
-
-# Or send a SIGHUP reload signal directly:
-kill -HUP $(pgrep syncd)
-```
-
-The supervisor diffs your active folder configuration live, adds newly defined watchers, gracefully tears down removed watchers, and updates the SQLite catalog without losing in-flight transfers.
-
----
-
-## CLI & UI Control Reference (`syncctl`)
-
-### 1. Interactive First-Time Setup Wizard (`syncctl setup` or `syncctl init`)
-Guides first-time users step-by-step through setting up `syncd` from a blank slate:
-```bash
-# Run first-time setup wizard:
 syncctl setup
 ```
-**Wizard Steps:**
-1. **Cloud Provider Selection & Auth**: Select Google Drive, AWS S3 / Cloudflare R2, Google Cloud Storage, or Local/NAS disk. For Google Drive, initiates instant browser OAuth2 login or manual code authorization.
-2. **First Watched Folder**: Configures folder name, local path (with automatic `~/` expansion, directory auto-creation, and strict duplicate/nested folder collision checks), and remote cloud destination URI.
-3. **Sync Mode Selection**: Choose between `ContinuousBackup` (`Backup [Safe]`, keeps files locally, mirrors edits, arms Empty Folder Safety Lock, and archives deletions to `.Trash-syncd/`) or `DropAndPurge` (`Offload`, 5-stage TOCTOU offload for renders/archives).
-4. **Safety & Validation**: Runs strict configuration validation ensuring no duplicate paths, name clashes, or remote target overlaps.
-5. **Daemon Activation**: Connects to the running daemon to reload configuration live, or prompts to enable and start the `systemd --user` background service.
+Runs the onboarding interview to configure storage credentials, select folders, choose modes, validate paths, and activate the daemon.
 
 ---
 
-### 2. Cloud Storage Authentication (`syncctl auth` or `syncctl login`)
-Inspect and manage authentication credentials for all supported cloud providers:
-
-#### Authenticate with Google Drive (OAuth2)
+### 2. Interactive Terminal UI Dashboard
 ```bash
-# Default: Spawns automated local browser loopback server on port 53682
-syncctl auth login
-
-# Headless / SSH server: manual authorization code paste
-syncctl auth login --manual
-
-# Custom Google Cloud OAuth client credentials
-syncctl auth login --client-id "<YOUR_CLIENT_ID>" --client-secret "<YOUR_CLIENT_SECRET>"
-```
-
-#### Check Provider Authentication Status
-```bash
-syncctl auth status
-# or: syncctl auth
-```
-Displays a real-time status table validating Google Drive OAuth2 token refresh health, AWS/R2 environment credentials, and GCS Service Account configurations.
-
-#### Import from rclone
-If you previously configured Google Drive in `rclone`, import it directly without re-authenticating:
-```bash
-syncctl auth import-rclone          # Imports [gdrive] from ~/.config/rclone/rclone.conf
-syncctl auth import-rclone myremote # Imports custom remote
-```
-
-#### Log Out / Revoke Credentials
-```bash
-syncctl auth logout
-```
-
----
-
-### 3. Interactive Terminal UI (`syncctl ui` or bare `syncctl`)
-Launches the full interactive, keyboard-driven terminal dashboard with live status cards, active folder selector, in-flight progress bars, and modal controls:
-```bash
-# Launch interactive TUI directly:
 syncctl
+# or: syncctl ui
 ```
-**Interactive Keybindings:**
-* `↑` / `↓` or `k` / `j`: Navigate watched sync folders.
-* `Enter` or `i`: Inspect folder properties (UUID, mode, baseline count, safety lock status, local/remote paths).
-* `p`: Open timed pause modal for the selected folder (e.g. `15m`, `1h`, or indefinite).
-* `r`: Resume synchronization for the selected folder.
-* `a`: Quick instructions to add a new folder to configuration.
-* `d` / `x`: Delete and remove the selected folder from configuration with confirmation dialog.
-* `b`: Open global bandwidth rate-limit modal dialog.
-* `s`: Trigger an immediate recursive reconciliation scan on the selected folder.
-* `0` / `1` / `5`: Quick-keys to set bandwidth to Unlimited, 1 MB/s, or 5 MB/s.
-* `?`: Show keyboard reference help overlay.
-* `q` / `Ctrl+C`: Exit cleanly and restore terminal screen buffer.
+Full-screen terminal interface with live transfer cards, folder selector, bandwidth meters, and keyboard controls:
+* `↑` / `↓` or `k` / `j`: Select folder.
+* `Enter` or `i`: Inspect folder properties (UUID, mode, paths, anchor status).
+* `p`: Open timed pause modal (e.g. `15m`, `1h`, or indefinite).
+* `r`: Resume synchronization.
+* `b`: Open bandwidth rate-limit modal.
+* `s`: Force reconciliation scan.
+* `d` / `x`: Delete folder configuration with confirmation.
+* `?`: Show keyboard help overlay.
+* `q`: Clean exit.
 
-### 4. Embedded Web Dashboard (`syncctl web`)
-Serves a clean, responsive, dark-mode browser dashboard on `http://127.0.0.1:8384` with zero external dependencies:
+---
+
+### 3. Embedded Web Dashboard
 ```bash
 # Launch on default port (http://127.0.0.1:8384):
 syncctl web
@@ -444,131 +373,156 @@ syncctl web
 # Custom host and port:
 syncctl web --bind 0.0.0.0 --port 9090
 ```
-Open `http://127.0.0.1:8384` in any browser to inspect metrics, active transfer progress bars, and trigger actions (Pause, Resume, Bandwidth Limit, Re-Scan) with one click.
+Open `http://127.0.0.1:8384` in any web browser to view real-time sync metrics, folder cards, active file progress, and one-click controls.
 
-### 5. Folder Management CLI & Console (`syncctl folder`)
+---
 
-Manage watched folders directly from the terminal without editing configuration files manually. Includes interactive wizards, configuration validation, collision protection, and automatic daemon reloads.
-
-#### Interactive Console Menu
-Launch the interactive terminal console to manage all folders with single-key menu choices:
+### 4. Live Telemetry Streaming
 ```bash
+syncctl watch
+```
+Displays streaming progress bars, per-file transfer speeds, EWMA throughput, and ETAs updated every 500ms.
+
+---
+
+### 5. Folder Management Commands
+```bash
+# Interactive menu:
 syncctl folder
-# or: syncctl folder menu / ui
-```
 
-#### List Configured Folders
-View all watched folders, sync modes, safety lock status, and daemon states:
-```bash
+# List all configured folders:
 syncctl folder list
-syncctl folder list --verbose    # Extended details (UUIDs, excludes, endpoints)
-```
+syncctl folder list --verbose
 
-#### Add a New Folder
-Launch the step-by-step interactive wizard:
-```bash
-syncctl folder add
-```
-Or specify parameters directly via CLI flags:
-```bash
-# Add a continuous backup folder:
-syncctl folder add \
-  --name documents \
-  --path ~/Documents \
-  --target s3://my-backup-bucket/documents \
-  --mode backup
+# Add a new folder:
+syncctl folder add --name docs --path ~/Documents --target gdrive://Documents --mode backup
+syncctl folder add --name renders --path ~/Renders --target s3://my-bucket/renders --mode offload
 
-# Add a safe drop & purge offload folder:
-syncctl folder add \
-  --name renders \
-  --path ~/Renders \
-  --target gs://archive-bucket/renders \
-  --mode offload \
-  --exclude "*.tmp" --exclude "*.crdownload"
+# Inspect folder:
+syncctl folder show docs
 
-# Add folder with custom S3 / MinIO / Cloudflare R2 endpoint:
-syncctl folder add \
-  --name r2-sync \
-  --path ~/Projects \
-  --target s3://projects-bucket/work \
-  --endpoint https://<account_id>.r2.cloudflarestorage.com \
-  --region auto
-```
+# Edit folder settings:
+syncctl folder edit docs --mode offload
 
-#### Inspect Folder Details
-Display comprehensive configuration and live runtime telemetry for a folder:
-```bash
-syncctl folder show documents
-syncctl folder show <FOLDER_UUID>
-```
+# Remove folder:
+syncctl folder remove docs
 
-#### Edit an Existing Folder
-Update folder settings interactively or via flags without touching the TOML file:
-```bash
-syncctl folder edit documents
-syncctl folder edit documents --target s3://new-bucket/documents --mode offload
-```
-
-#### Remove a Folder
-Safely remove a folder from configuration and stop syncing it (local & remote files remain untouched):
-```bash
-syncctl folder remove documents
-syncctl folder remove documents --yes   # Skip confirmation prompt
-```
-
-#### Reload Daemon Configuration
-Apply configuration changes to the running daemon without restarting the process:
-```bash
+# Reload running daemon with updated config:
 syncctl reload
 ```
 
 ---
 
-### 6. Non-Interactive CLI Commands
-
-#### Status Overview
-Inspect folder states, device status, pending queues, and active transfers:
+### 6. Cloud Authentication Management
 ```bash
-syncctl status
-```
+# Google Drive browser OAuth2 login:
+syncctl auth login
 
-### Live Telemetry Streaming
-Live progress bars, EWMA throughput, and ETAs updated every 500ms:
-```bash
-syncctl watch
-```
+# Headless / SSH server manual code:
+syncctl auth login --manual
 
-### Bandwidth Throttling
-Dynamically adjust upload bandwidth without restarting the daemon:
-```bash
-syncctl bwlimit 5MB/s
-syncctl bwlimit 500KB/s
-syncctl bwlimit 0 # Unlimited
-```
+# Custom Google Cloud OAuth client credentials:
+syncctl auth login --client-id "<CLIENT_ID>" --client-secret "<CLIENT_SECRET>"
 
-### Pause & Resume
-Pause indefinitely or for a timed duration (e.g., during gaming or meetings):
-```bash
-syncctl pause --for 30m
-syncctl pause --for 2h
-syncctl pause <FOLDER_ID>
-syncctl resume
-```
+# Inspect credentials status:
+syncctl auth status
 
-### Trigger Reconciliation Scan
-Force an immediate recursive scan comparing filesystem baseline with remote state:
-```bash
-syncctl scan
-syncctl scan <FOLDER_ID>
+# Import existing rclone credentials:
+syncctl auth import-rclone
+
+# Log out / remove saved credentials:
+syncctl auth logout
 ```
 
 ---
 
-## Testing
+### 7. Bandwidth Throttling & Queue Management
+```bash
+# Set bandwidth rate limits dynamically:
+syncctl bwlimit 5MB/s
+syncctl bwlimit 500KB/s
+syncctl bwlimit 0            # Unlimited
 
-Run the full automated test suite covering in-memory SQLite transactions, TOCTOU stat asserts, anchor canaries, debouncer sliding-window priority, and IPC codecs:
+# Pause and resume:
+syncctl pause --for 30m      # Pause for 30 minutes
+syncctl pause --for 2h       # Pause for 2 hours
+syncctl pause                # Pause indefinitely
+syncctl resume               # Resume syncing
+
+# Trigger immediate reconciliation scan:
+syncctl scan
+```
+
+---
+
+## Daemon Operation & Maintenance
+
+### systemd Service Management
+`syncd` runs as a standard Linux systemd user service:
+
+```bash
+# Check service status:
+systemctl --user status syncd
+
+# View live daemon logs:
+journalctl --user -u syncd -f
+
+# Restart daemon:
+systemctl --user restart syncd
+
+# Stop daemon:
+systemctl --user stop syncd
+```
+
+### Configuration & Database File Locations
+- **Configuration File**: `~/.config/syncd/config.toml`
+- **Google Credentials**: `~/.config/syncd/gdrive_credentials.json` (chmod 600)
+- **SQLite WAL Database**: `~/.local/share/syncd/syncd.db`
+- **IPC Domain Socket**: `/run/user/<UID>/syncd.sock` (mode 0600)
+- **Log Files**: `~/.local/share/syncd/logs/` (rotated and gzip-compressed)
+
+---
+
+## Packaging the Standalone Installer
+
+To generate a new self-contained `syncd-installer.sh` bundle after modifying code:
+
+```bash
+# Build release binaries and bundle into standalone installer:
+./scripts/package_standalone.sh
+```
+
+This creates `syncd-installer.sh` (and alias `cloud-sync-installer.sh`), which can be shared and run on any Linux PC with zero dependencies.
+
+---
+
+## Automated Test Suite
+
+Run the full automated test suite covering SQLite WAL transactions, TOCTOU stat guards, anchor canaries, mount monitors, debouncer sliding-windows, and IPC framing:
 
 ```bash
 cargo test --workspace
 ```
 
+---
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit issues, feature requests, or pull requests on GitHub.
+
+1. Fork the repository.
+2. Create your feature branch (`git checkout -b feature/my-new-feature`).
+3. Commit your changes (`git commit -am 'Add some feature'`).
+4. Ensure all tests pass (`cargo test --workspace`).
+5. Push to the branch (`git push origin feature/my-new-feature`).
+6. Create a new Pull Request.
+
+---
+
+## License
+
+This project is dual-licensed under either:
+* **MIT License** ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+* **Apache License, Version 2.0** ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+
+at your option.
